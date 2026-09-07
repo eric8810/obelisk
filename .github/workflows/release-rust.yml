@@ -13,7 +13,7 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build CLI ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -61,9 +61,110 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  build-app:
+    name: Build desktop app ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: obelisk-app-linux-x86_64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: obelisk-app-macos-aarch64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: obelisk-app-macos-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: obelisk-app-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # The GPUI app links X11 + xkbcommon on Linux (xcb client libraries).
+      - name: Install Linux graphics dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxau-dev libxdmcp-dev
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p obelisk-app
+
+      # Linux: standalone binary plus a runtime-dependency note.
+      - name: Package Linux app
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/obelisk-app" dist/
+          strip "dist/obelisk-app" || true
+          cat > dist/README.txt <<'EOF'
+          Obelisk desktop app (Linux)
+
+          Run: ./obelisk-app
+
+          Runtime dependencies (present on any desktop install):
+            X11 (libX11 / libxcb / libxcb-xkb) and libxkbcommon.
+          The app is tray-resident: closing the window keeps it running.
+          EOF
+          tar -czf "${{ matrix.artifact }}" -C dist obelisk-app README.txt
+
+      # macOS: a minimal .app bundle (ad-hoc signed, not notarized).
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          VERSION=${GITHUB_REF_NAME#obelisk-v}
+          BIN="target/${{ matrix.target }}/release/obelisk-app"
+          strip "$BIN" || true
+          APP=Obelisk.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/obelisk-app"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>              <string>Obelisk</string>
+            <key>CFBundleDisplayName</key>       <string>Obelisk</string>
+            <key>CFBundleExecutable</key>        <string>obelisk-app</string>
+            <key>CFBundleIdentifier</key>        <string>io.github.eric8810.obelisk</string>
+            <key>CFBundlePackageType</key>       <string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key>           <string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key>    <string>11.0</string>
+            <key>NSHighResolutionCapable</key>   <true/>
+            <key>LSUIElement</key>               <false/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --sign - "$APP"
+          tar -czf "${{ matrix.artifact }}" "$APP"
+
+      # Windows: zipped executable.
+      - name: Package Windows app
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/obelisk-app.exe" dist/
+          Compress-Archive -Path dist/obelisk-app.exe -DestinationPath "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, build-app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
