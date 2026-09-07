@@ -26,25 +26,7 @@ pub enum AppView {
     Settings,
 }
 
-impl AppView {
-    pub fn label(self) -> &'static str {
-        match self {
-            AppView::Sessions => "Sessions",
-            AppView::Memory => "Memory",
-            AppView::Activity => "Activity",
-            AppView::Recap => "Recap",
-            AppView::Settings => "Settings",
-        }
-    }
-
-    pub const ALL: [AppView; 5] = [
-        AppView::Sessions,
-        AppView::Memory,
-        AppView::Activity,
-        AppView::Recap,
-        AppView::Settings,
-    ];
-}
+impl AppView {}
 
 /// Settings page (Vue Settings parity, Stage-2 slice): the editor scheme for
 /// file references is editable (plain settings.json write, no DB writes);

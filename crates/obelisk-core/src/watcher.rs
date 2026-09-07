@@ -93,9 +93,20 @@ impl FileSignature {
     fn changed(prev: Option<Self>, next: Option<Self>) -> bool {
         match (prev, next) {
             (Some(prev), Some(next)) => {
-                prev.size != next.size
-                    || prev.mtime_ms != next.mtime_ms
-                    || (cfg!(unix) && (prev.dev != next.dev || prev.ino != next.ino))
+                if prev.size != next.size || prev.mtime_ms != next.mtime_ms {
+                    return true;
+                }
+                // Device/inode identity exists only on unix; `cfg!` would be
+                // type-checked against the (absent) fields on Windows, so
+                // this must be an attribute-level branch.
+                #[cfg(unix)]
+                {
+                    prev.dev != next.dev || prev.ino != next.ino
+                }
+                #[cfg(not(unix))]
+                {
+                    false
+                }
             }
             (None, None) => false,
             _ => true,

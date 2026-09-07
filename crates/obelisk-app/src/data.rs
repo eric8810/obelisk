@@ -30,6 +30,9 @@ pub struct SessionSummary {
 pub struct AppData {
     pub projects: Vec<ProjectSummary>,
     pub sessions: Vec<SessionSummary>,
+    /// Memory registry counts for the sidebar badges.
+    pub memory_active: usize,
+    pub memory_archived: usize,
 }
 
 impl AppData {
@@ -42,7 +45,13 @@ impl AppData {
         };
         let projects = read_projects(&conn);
         let sessions = read_sessions(&conn);
-        Self { projects, sessions }
+        let (memory_active, memory_archived) = memory_counts(&conn);
+        Self {
+            projects,
+            sessions,
+            memory_active,
+            memory_archived,
+        }
     }
 
     /// Sessions for one project, or all sessions when None.
@@ -57,6 +66,20 @@ impl AppData {
                 .collect(),
         }
     }
+}
+
+/// Active/archived memory counts for the sidebar badges (one indexed read;
+/// the memory list itself stays lazily loaded per view switch).
+fn memory_counts(conn: &rusqlite::Connection) -> (usize, usize) {
+    let count = |archived: bool| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE archived = ?",
+            [archived],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize
+    };
+    (count(false), count(true))
 }
 
 // ---- Memories (Vue db:getMemories / db:readMemoryFile parity) ----

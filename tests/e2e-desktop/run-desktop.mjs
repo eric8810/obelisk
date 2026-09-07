@@ -74,7 +74,7 @@ const scenarios = {
     const shot = evidence.shot(ctx, 'cold-start');
     await d.visionExpects(
       shot,
-      'Describe the app layout: sidebar PROJECTS section, the session row (title, source deepseek, project, message count), the VIEWS nav with Sessions/Memory/Activity/Recap/Settings, and the search box. Quote the session row title and message count.',
+      'Describe the app layout: the sidebar (brand row, Library section with Sessions/Memory/Active/Archived rows and counts, Stats section with Activity/Recap, Projects section, Settings at the bottom), the session row in the main panel (title, source deepseek, project, message count), and the search box. Quote the session row title and message count.',
       ['Sanitized fixture session', '7 msgs', 'PROJECTS', 'Settings'],
     );
     if (!d.appAlive(ctx.pid)) throw new ScenarioError('app process died during cold start');

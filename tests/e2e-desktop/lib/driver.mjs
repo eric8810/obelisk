@@ -163,13 +163,19 @@ export function sleep(ms) {
 
 /** Sidebar nav row centers (window coords), derived from the standard
  * layout; re-validated per run by the runner's probe. */
+// Sidebar nav coordinates (window-relative physical px), calibrated by
+// click-probing the ported sidebar (brand 36px + Library/Stats/Projects
+// sections with 28px rows; see the M4 visual-parity rework).
 export const NAV = {
-  Sessions: { x: 120, y: 121 },
-  Memory: { x: 120, y: 191 },
-  Activity: { x: 120, y: 261 },
-  Recap: { x: 120, y: 331 },
-  Settings: { x: 120, y: 401 },
+  Sessions: { x: 120, y: 164 },
+  Memory: { x: 120, y: 217 },
+  Activity: { x: 120, y: 430 },
+  Recap: { x: 120, y: 485 },
+  Settings: { x: 120, y: 710 },
 };
+
+/** First project row in the sidebar's Projects section. */
+export const NAV_PROJECT = { x: 120, y: 645 };
 
 /** Session-list search box center (window coords). */
 export const SEARCH_BOX = { x: 800, y: 61 };

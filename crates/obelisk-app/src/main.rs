@@ -15,10 +15,12 @@
 //! (no IPC), reads the shared ~/.obelisk/obelisk.sqlite, and its resident
 //! daemon owns the index writes (heartbeat marker + writer lease).
 
+mod assets;
 mod daemon;
 mod data;
 mod file_reference;
 mod session_list;
+mod theme;
 mod timeline;
 mod timeline_view;
 mod tool_render;
@@ -374,109 +376,17 @@ impl ObeliskApp {
 
 impl gpui::Render for ObeliskApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let projects = self.data.projects.clone();
-
         gpui::div()
             .flex()
             .h_full()
             .w_full()
             .font_family(".SystemUIFont")
-            // Project sidebar: view navigation + projects
-            .child(
-                gpui::div()
-                    .id("sidebar")
-                    .w(px(240.0))
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .border_r_1()
-                    .border_color(gpui::rgb(0x2a2a2e))
-                    .bg(gpui::rgb(0x1b1b1f))
-                    .overflow_y_scroll()
-                    .child(
-                        gpui::div()
-                            .px_4()
-                            .py_3()
-                            .text_size(px(13.0))
-                            .text_color(gpui::rgb(0x9a9aa5))
-                            .child("VIEWS"),
-                    )
-                    .children(crate::views::AppView::ALL.map(|view| {
-                        let is_selected = self.view == view && self.timeline.is_none();
-                        gpui::div()
-                            .id(view.label())
-                            .px_4()
-                            .py_2()
-                            .flex()
-                            .justify_between()
-                            .text_size(px(13.0))
-                            .text_color(if is_selected {
-                                gpui::rgb(0xffffff)
-                            } else {
-                                gpui::rgb(0xc8c8d0)
-                            })
-                            .bg(if is_selected {
-                                gpui::rgb(0x2d2d33)
-                            } else {
-                                gpui::rgb(0x1b1b1f)
-                            })
-                            .hover(|s| s.bg(gpui::rgb(0x242429)))
-                            .cursor_pointer()
-                            .child(gpui::div().child(view.label()))
-                            .on_click(cx.listener(move |app, _ev, window, cx| {
-                                app.select_view(view, window, cx);
-                            }))
-                    }))
-                    .child(
-                        gpui::div()
-                            .px_4()
-                            .py_3()
-                            .text_size(px(13.0))
-                            .text_color(gpui::rgb(0x9a9aa5))
-                            .child("PROJECTS"),
-                    )
-                    .children(projects.iter().map(|p| {
-                        let is_selected = self.view == crate::views::AppView::Sessions
-                            && self.selected_project.as_deref() == Some(p.slug.as_str());
-                        let slug = p.slug.clone();
-                        let count = p.session_count;
-                        gpui::div()
-                            .id(slug.clone())
-                            .px_4()
-                            .py_2()
-                            .flex()
-                            .justify_between()
-                            .text_size(px(13.0))
-                            .text_color(if is_selected {
-                                gpui::rgb(0xffffff)
-                            } else {
-                                gpui::rgb(0xc8c8d0)
-                            })
-                            .bg(if is_selected {
-                                gpui::rgb(0x2d2d33)
-                            } else {
-                                gpui::rgb(0x1b1b1f)
-                            })
-                            .hover(|s| s.bg(gpui::rgb(0x242429)))
-                            .cursor_pointer()
-                            .child(gpui::div().child(slug.clone()))
-                            .child(
-                                gpui::div()
-                                    .text_color(gpui::rgb(0x77777f))
-                                    .child(count.to_string()),
-                            )
-                            .on_click(cx.listener(move |app, _ev, window, cx| {
-                                app.select_view(crate::views::AppView::Sessions, window, cx);
-                                let next = if app.selected_project.as_deref() == Some(slug.as_str())
-                                {
-                                    None
-                                } else {
-                                    Some(slug.clone())
-                                };
-                                app.select_project(next, window, cx);
-                            }))
-                    })),
-            )
+            // Sidebar, a 1:1 port of the original renderer's App.vue aside:
+            // brand, Library (Sessions/Memory with Active/Archived subs),
+            // Stats (Activity/Recap), Projects (filter + list), Settings
+            // pinned to the bottom. Metrics and colors come from theme.rs
+            // (the ported base.css tokens).
+            .child(sidebar(self, cx))
             // Right panel: session list / timeline / secondary views
             .child(match self.view {
                 crate::views::AppView::Sessions => sessions_panel(self, cx),
@@ -599,6 +509,7 @@ fn main() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     Application::new()
+        .with_assets(assets::IconAssets)
         .with_http_client(std::sync::Arc::new(LocalImageHttpClient))
         .run(move |cx: &mut App| {
             adabraka_ui::init(cx);
@@ -665,4 +576,291 @@ fn main() {
             )
             .expect("window opens");
         });
+}
+
+// ---- Sidebar (App.vue aside port) ------------------------------------------
+
+/// One inline SVG icon from the embedded asset table, tinted by `color`.
+fn icon(name: &str, color: gpui::Rgba, size: gpui::Pixels) -> gpui::Svg {
+    gpui::svg()
+        .path(format!("icons/{name}.svg"))
+        .size(size)
+        .text_color(color)
+}
+
+/// Sidebar section title (`.sidebar-section-title`: 10.5px, muted, tracked).
+fn section_title(label: &str) -> gpui::Div {
+    gpui::div()
+        .px_2p5()
+        .pt_1()
+        .pb_1p5()
+        .text_size(px(10.5))
+        .text_color(theme::MUTED)
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .child(label.to_string())
+}
+
+/// Hairline divider between sidebar sections.
+fn section_divider() -> gpui::Div {
+    gpui::div().mx_1p5().h(px(1.0)).bg(theme::HAIRLINE)
+}
+
+/// Sidebar row click handler: switches view / selects project.
+type SidebarClick = Box<dyn Fn(&mut ObeliskApp, &mut gpui::Window, &mut Context<ObeliskApp>)>;
+
+/// One sidebar row (`.sidebar-item`): icon + label + mono badge, 28px tall,
+/// 5px radius; active gets the accent-soft pill plus the 2px accent rail.
+fn sidebar_row(
+    id: gpui::SharedString,
+    icon_name: Option<&str>,
+    label: &str,
+    badge: Option<usize>,
+    active: bool,
+    sub: bool,
+    on_click: SidebarClick,
+    cx: &mut Context<ObeliskApp>,
+) -> gpui::AnyElement {
+    let row = gpui::div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2p5()
+        .h(if sub {
+            theme::ROW_H_SUB
+        } else {
+            theme::ROW_H_COMPACT
+        })
+        .rounded_sm()
+        .text_size(if sub {
+            theme::TEXT_SM
+        } else {
+            theme::TEXT_BASE
+        })
+        .when(sub, |row| row.pl(px(30.0)))
+        .text_color(if active { theme::FG } else { theme::FG_2 })
+        .bg(if active {
+            theme::ACCENT_SOFT
+        } else {
+            theme::rgba(0x00000000)
+        })
+        .hover(|s| s.bg(theme::SURFACE_STRONG))
+        .cursor_pointer()
+        .on_click(cx.listener(move |app, _ev, window, cx| {
+            (on_click)(app, window, cx);
+        }));
+    let icon_size = if sub { px(12.0) } else { px(14.0) };
+    let row = match icon_name {
+        Some(name) => row.child(icon(
+            name,
+            if active {
+                theme::ACCENT_2
+            } else {
+                theme::MUTED
+            },
+            icon_size,
+        )),
+        None => row,
+    };
+    let row = row.child(
+        gpui::div()
+            .flex_1()
+            .overflow_x_hidden()
+            .child(label.to_string()),
+    );
+    let row = match badge {
+        Some(count) => row.child(
+            gpui::div()
+                .font_family(theme::MONO)
+                .text_size(px(10.5))
+                .text_color(if active { theme::FG_2 } else { theme::MUTED })
+                .child(count.to_string()),
+        ),
+        None => row,
+    };
+    row.into_any_element()
+}
+
+/// Build the whole sidebar (App.vue `<aside>`).
+fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyElement {
+    let projects = app.data.projects.clone();
+    let session_total: usize = app.data.sessions.len();
+    let memory_active = app.data.memory_active;
+    let memory_archived = app.data.memory_archived;
+    let current_view = app.view;
+    let in_timeline = app.timeline.is_some();
+    let selected_project = app.selected_project.clone();
+
+    gpui::div()
+        .id("sidebar")
+        .w(theme::SIDEBAR_W)
+        .h_full()
+        .flex()
+        .flex_col()
+        .border_r_1()
+        .border_color(theme::HAIRLINE_STRONG)
+        .bg(theme::SIDEBAR_BG)
+        .overflow_y_scroll()
+        // Brand row (36px, hairline below): logo + name.
+        .child(
+            gpui::div()
+                .id("brand")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px(px(14.0))
+                .h(px(36.0))
+                .border_b_1()
+                .border_color(theme::HAIRLINE)
+                .child(gpui::svg().path("icons/brand.svg").size(px(18.0)))
+                .child(
+                    gpui::div()
+                        .text_size(theme::TEXT_BASE)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::FG_2)
+                        .child("Obelisk"),
+                ),
+        )
+        // Library: Sessions + Memory (with Active/Archived sub-rows).
+        .child(
+            gpui::div()
+                .px(px(6.0))
+                .pt_2()
+                .pb_2()
+                .child(section_title("Library"))
+                .child(sidebar_row(
+                    "nav-sessions".into(),
+                    Some("sessions"),
+                    "Sessions",
+                    Some(session_total),
+                    current_view == crate::views::AppView::Sessions && !in_timeline,
+                    false,
+                    Box::new(|app, window, cx| {
+                        app.select_view(crate::views::AppView::Sessions, window, cx);
+                    }),
+                    cx,
+                ))
+                .child(sidebar_row(
+                    "nav-memory".into(),
+                    Some("memory"),
+                    "Memory",
+                    Some(memory_active + memory_archived),
+                    current_view == crate::views::AppView::Memory && !in_timeline,
+                    false,
+                    Box::new(|app, window, cx| {
+                        app.select_view(crate::views::AppView::Memory, window, cx);
+                    }),
+                    cx,
+                ))
+                .child(sidebar_row(
+                    "nav-memory-active".into(),
+                    Some("dot-filled"),
+                    "Active",
+                    Some(memory_active),
+                    current_view == crate::views::AppView::Memory && !in_timeline,
+                    true,
+                    Box::new(|app, window, cx| {
+                        app.select_view(crate::views::AppView::Memory, window, cx);
+                    }),
+                    cx,
+                ))
+                .child(sidebar_row(
+                    "nav-memory-archived".into(),
+                    Some("dot-outline"),
+                    "Archived",
+                    Some(memory_archived),
+                    false,
+                    true,
+                    Box::new(|app, window, cx| {
+                        app.select_view(crate::views::AppView::Memory, window, cx);
+                    }),
+                    cx,
+                )),
+        )
+        .child(section_divider())
+        // Stats: Activity + Recap.
+        .child(
+            gpui::div()
+                .px(px(6.0))
+                .pt_2()
+                .pb_2()
+                .child(section_title("Stats"))
+                .child(sidebar_row(
+                    "nav-activity".into(),
+                    Some("activity"),
+                    "Activity",
+                    None,
+                    current_view == crate::views::AppView::Activity && !in_timeline,
+                    false,
+                    Box::new(|app, window, cx| {
+                        app.select_view(crate::views::AppView::Activity, window, cx);
+                    }),
+                    cx,
+                ))
+                .child(sidebar_row(
+                    "nav-recap".into(),
+                    Some("recap"),
+                    "Recap",
+                    None,
+                    current_view == crate::views::AppView::Recap && !in_timeline,
+                    false,
+                    Box::new(|app, window, cx| {
+                        app.select_view(crate::views::AppView::Recap, window, cx);
+                    }),
+                    cx,
+                )),
+        )
+        .child(section_divider())
+        // Projects: title + folder rows with counts.
+        .child(
+            gpui::div()
+                .id("projects")
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .px(px(6.0))
+                .pt_2()
+                .child(section_title("Projects"))
+                .children(projects.iter().map(|p| {
+                    let is_selected = current_view == crate::views::AppView::Sessions
+                        && !in_timeline
+                        && selected_project.as_deref() == Some(p.slug.as_str());
+                    let slug = p.slug.clone();
+                    let count = p.session_count;
+                    sidebar_row(
+                        format!("project-{slug}").into(),
+                        Some("folder"),
+                        &p.slug,
+                        Some(count),
+                        is_selected,
+                        false,
+                        Box::new(move |app, window, cx| {
+                            app.select_view(crate::views::AppView::Sessions, window, cx);
+                            let next = if app.selected_project.as_deref() == Some(slug.as_str()) {
+                                None
+                            } else {
+                                Some(slug.clone())
+                            };
+                            app.select_project(next, window, cx);
+                        }),
+                        cx,
+                    )
+                })),
+        )
+        // Settings pinned to the bottom above a hairline.
+        .child(section_divider())
+        .child(gpui::div().px(px(6.0)).pt_1p5().pb_2().child(sidebar_row(
+            "nav-settings".into(),
+            Some("settings"),
+            "Settings",
+            None,
+            current_view == crate::views::AppView::Settings,
+            false,
+            Box::new(|app, window, cx| {
+                app.select_view(crate::views::AppView::Settings, window, cx);
+            }),
+            cx,
+        )))
+        .into_any_element()
 }
