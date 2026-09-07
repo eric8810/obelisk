@@ -60,6 +60,9 @@ pub struct SessionListView {
     app: gpui::Entity<crate::ObeliskApp>,
     home: std::path::PathBuf,
     search: SessionSearch,
+    /// Whether the index has completed a build — distinguishes "building
+    /// on first launch" from "no transcripts found".
+    index_ready: bool,
 }
 
 pub fn session_list_view(
@@ -68,6 +71,7 @@ pub fn session_list_view(
     app: gpui::Entity<crate::ObeliskApp>,
     home: std::path::PathBuf,
     search: SessionSearch,
+    index_ready: bool,
 ) -> SessionListView {
     SessionListView {
         sessions,
@@ -75,6 +79,7 @@ pub fn session_list_view(
         app,
         home,
         search,
+        index_ready,
     }
 }
 
@@ -254,8 +259,10 @@ impl RenderOnce for SessionListView {
                     .text_color(gpui::rgb(0x77777f))
                     .child(if searching {
                         "No sessions match this search — try a different term."
+                    } else if self.index_ready {
+                        "No sessions found in your provider transcripts."
                     } else {
-                        "No sessions indexed yet — run `obelisk --build`."
+                        "Building the index from your transcripts — the first build can take a minute on large histories. This screen fills in automatically."
                     })
                     .into_any_element()
             } else {

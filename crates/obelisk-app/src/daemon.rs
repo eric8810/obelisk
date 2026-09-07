@@ -118,6 +118,11 @@ struct DaemonGlobal {
 
 impl gpui::Global for DaemonGlobal {}
 
+/// Snapshot of the registered app windows (for cross-window reloads).
+pub fn registered_apps(cx: &gpui::App) -> Vec<gpui::WeakEntity<ObeliskApp>> {
+    cx.global::<AppRegistryGlobal>().apps.clone()
+}
+
 /// Register one app entity (its window) for daemon refreshes.
 pub fn register_app(cx: &mut gpui::App, app: gpui::WeakEntity<ObeliskApp>) {
     let registry = cx.default_global::<AppRegistryGlobal>();
@@ -156,8 +161,17 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
         let mut pending_paths: Vec<PathBuf> = Vec::new();
         let mut pending_rescans: Vec<PathBuf> = Vec::new();
         let mut first_event: Option<Instant> = None;
-        let mut last_build = Instant::now();
+        let mut last_build;
         let mut next_heartbeat = Instant::now();
+
+        // Build on launch (the TS app's first-run inventory): a fresh
+        // install has no index and no watch events to react to, so without
+        // this the first build would only land at the 5-minute reconcile.
+        // Incremental semantics: cold start does the full work, an already
+        // fresh index skips in milliseconds.
+        eprintln!("obelisk daemon: initial index build");
+        run_build(cx, &home, &cwd, &watcher, &registry, false, false).await;
+        last_build = Instant::now();
 
         loop {
             if first_event.is_none() {
@@ -195,7 +209,7 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
                         if now >= reconcile_at {
                             // Periodic full reconcile build (TS RECONCILE_MS):
                             // bounds staleness from silently dropped events.
-                            run_build(cx, &home, &cwd, &watcher, &registry, true).await;
+                            run_build(cx, &home, &cwd, &watcher, &registry, true, true).await;
                             last_build = Instant::now();
                         }
                         continue;
@@ -257,7 +271,7 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
                     "obelisk daemon: incremental build (full={full}, {} changed paths)",
                     changed.len()
                 );
-                run_build(cx, &home, &cwd, &watcher, &registry, full).await;
+                run_build(cx, &home, &cwd, &watcher, &registry, full, true).await;
                 last_build = Instant::now();
             }
         }
@@ -290,6 +304,7 @@ async fn run_build(
     watcher: &Arc<AdaptiveWatcher>,
     registry: &Arc<obelisk_core::providers::types::ProviderRegistry>,
     full: bool,
+    ignore_recent: bool,
 ) {
     let build_home = home.to_path_buf();
     let build_registry = registry.clone();
@@ -300,7 +315,7 @@ async fn run_build(
                 &build_home,
                 BuildIndexOptions {
                     force: full,
-                    ignore_recent_build: true,
+                    ignore_recent_build: ignore_recent,
                     // This daemon owns the heartbeat marker; builds must
                     // not be suppressed by our own liveness row.
                     ignore_daemon_ownership: true,

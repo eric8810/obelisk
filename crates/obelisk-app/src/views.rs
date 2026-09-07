@@ -30,14 +30,34 @@ impl AppView {}
 
 /// Settings page (Vue Settings parity, Stage-2 slice): the editor scheme for
 /// file references is editable (plain settings.json write, no DB writes);
-/// provider roots are shown read-only — changing them reshapes indexing and
+/// provider roots are editable — saving writes settings.json and the caller
 /// stays with the daemon configuration until Stage 3.
 #[derive(IntoElement)]
 pub struct SettingsView {
-    pub provider_roots: Vec<(String, String)>,
     pub editor_scheme: String,
     pub on_scheme: EditorSchemeFn,
+    /// Editable data-source rows (one per builtin provider).
+    pub roots: Vec<ProviderRootRow>,
+    /// Save a custom root for one provider (writes settings.json, then the
+    /// caller rebuilds the index).
+    pub on_save_root: SaveRootFn,
+    /// Transient save status line.
+    pub status: Option<String>,
 }
+
+/// One provider row in the data-sources form.
+pub struct ProviderRootRow {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// The effective root right now (custom override or builtin default).
+    pub current: String,
+    pub is_custom: bool,
+    /// Text input holding a new custom path (empty = reset to default).
+    pub input: gpui::Entity<adabraka_ui::components::input_state::InputState>,
+}
+
+/// Fired with (provider id, custom root path) on Save.
+pub type SaveRootFn = Rc<dyn Fn(&str, &str, &mut gpui::Window, &mut App) + 'static>;
 
 /// Fired with the newly chosen editor scheme id.
 pub type EditorSchemeFn = Rc<dyn Fn(&str, &mut gpui::Window, &mut App) + 'static>;
@@ -52,40 +72,76 @@ const EDITOR_SCHEMES: [(&str, &str); 5] = [
 
 impl RenderOnce for SettingsView {
     fn render(self, _window: &mut gpui::Window, _cx: &mut App) -> impl IntoElement {
+        use adabraka_ui::components::input::Input;
         let mut roots = gpui::div().flex().flex_col();
-        for (id, path) in &self.provider_roots {
+        for row in &self.roots {
+            let on_save = self.on_save_root.clone();
+            let id = row.id;
+            let input = row.input.clone();
             roots = roots.child(
                 gpui::div()
                     .flex()
-                    .justify_between()
-                    .gap_3()
+                    .flex_col()
+                    .gap_1()
                     .py_2()
                     .border_b_1()
-                    .border_color(gpui::rgb(0x222226))
+                    .border_color(crate::theme::HAIRLINE)
                     .child(
                         gpui::div()
-                            .text_size(px(13.0))
-                            .text_color(gpui::rgb(0xdcdce4))
-                            .child(id.clone()),
+                            .flex()
+                            .items_baseline()
+                            .gap_2()
+                            .child(
+                                gpui::div()
+                                    .text_size(crate::theme::TEXT_BASE)
+                                    .text_color(crate::theme::FG)
+                                    .child(row.label.to_string()),
+                            )
+                            .child(
+                                gpui::div()
+                                    .font_family(crate::theme::MONO)
+                                    .text_size(px(11.0))
+                                    .text_color(if row.is_custom {
+                                        crate::theme::ACCENT_2
+                                    } else {
+                                        crate::theme::MUTED
+                                    })
+                                    .text_ellipsis()
+                                    .overflow_hidden()
+                                    .child(if row.is_custom {
+                                        format!("{} (custom)", row.current)
+                                    } else {
+                                        row.current.clone()
+                                    }),
+                            ),
                     )
                     .child(
                         gpui::div()
-                            .flex_1()
-                            .text_size(px(11.0))
-                            .text_color(gpui::rgb(0x77777f))
-                            .text_ellipsis()
-                            .overflow_hidden()
-                            .child(path.clone()),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(gpui::div().flex_1().child(
+                                Input::new(&input).placeholder("custom path (empty = default)"),
+                            ))
+                            .child(
+                                gpui::div()
+                                    .id(gpui::SharedString::from(format!("save-root-{id}")))
+                                    .px_3()
+                                    .py_1p5()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(crate::theme::HAIRLINE_STRONG)
+                                    .text_size(crate::theme::TEXT_SM)
+                                    .text_color(crate::theme::FG_2)
+                                    .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
+                                    .cursor_pointer()
+                                    .child("Save")
+                                    .on_click(move |_event, window, cx| {
+                                        let path = input.read(cx).content().to_string();
+                                        on_save(id, path.trim(), window, cx);
+                                    }),
+                            ),
                     ),
-            );
-        }
-        if self.provider_roots.is_empty() {
-            roots = roots.child(
-                gpui::div()
-                    .py_2()
-                    .text_size(px(12.0))
-                    .text_color(gpui::rgb(0x77777f))
-                    .child("(default provider roots — none configured)"),
             );
         }
 
@@ -177,13 +233,20 @@ impl RenderOnce for SettingsView {
                             .child(
                                 gpui::div()
                                     .text_size(px(11.0))
-                                    .text_color(gpui::rgb(0x77777f))
+                                    .text_color(crate::theme::MUTED)
                                     .child(
-                                        "Where transcripts are discovered and watched \
-                                         (read-only until Stage 3)",
+                                        "Where transcripts are discovered and watched. \
+                                         Enter an absolute path to point Obelisk at your own \
+                                         directory; leave empty and save to reset to default.",
                                     ),
                             )
-                            .child(roots),
+                            .child(roots)
+                            .children(self.status.clone().map(|status| {
+                                gpui::div()
+                                    .text_size(crate::theme::TEXT_SM)
+                                    .text_color(crate::theme::ACCENT_2)
+                                    .child(status)
+                            })),
                     ),
             )
     }

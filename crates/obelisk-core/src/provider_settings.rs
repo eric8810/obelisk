@@ -238,6 +238,31 @@ pub struct ConfiguredRuntime {
     pub registry: ProviderRegistry,
 }
 
+/// The five builtin providers with their default roots (as resolved on this
+/// machine), for settings UIs that let a human point Obelisk at different
+/// directories. `pi` resolves through env + cwd like the real provider.
+pub fn builtin_provider_defaults(
+    home: &Path,
+    cwd: &Path,
+) -> Vec<(&'static str, &'static str, PathBuf)> {
+    let kimi_root = std::env::var_os("KIMI_CODE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".kimi-code"));
+    let pi = PiProvider::create(None, Some(cwd.to_string_lossy().into_owned()));
+    let pi_root = PathBuf::from(pi.descriptor().default_root.clone());
+    vec![
+        ("claude", "Claude Code", crate::parsing::claude_dir(home)),
+        ("codex", "Codex", crate::parsing::codex_dir(home)),
+        (
+            "deepseek",
+            "DeepSeek Harness",
+            home.join(".dsh").join("sessions"),
+        ),
+        ("kimi", "Kimi Code", kimi_root),
+        ("pi", "Pi", pi_root),
+    ]
+}
+
 /// Settings-aware runtime: providers whose roots fail to resolve become
 /// honest no-discovery wrappers (TS `createConfiguredBuiltinProviderRuntime`).
 pub fn create_configured_builtin_provider_runtime(

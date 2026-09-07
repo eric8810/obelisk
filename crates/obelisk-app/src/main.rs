@@ -123,6 +123,8 @@ struct ObeliskApp {
     selected_recap_name: Option<String>,
     /// Settings-page snapshot, loaded on demand.
     settings: Option<crate::data::SettingsSnapshot>,
+    /// Transient settings-page status line (root save result).
+    settings_status: Option<String>,
     /// Session-list search box state (Vue: `/` focuses, filters by
     /// title/project/branch client-side). Observed → `search_query`.
     search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
@@ -191,6 +193,7 @@ impl ObeliskApp {
             selected_recap: None,
             selected_recap_name: None,
             settings: None,
+            settings_status: None,
             search_state,
             search_query: String::new(),
             search_hits: Vec::new(),
@@ -359,6 +362,15 @@ impl ObeliskApp {
         cx.notify();
     }
 
+    /// Reload everything from the shared index (data + settings snapshot).
+    fn reload_from_index(&mut self, cx: &mut Context<Self>) {
+        let home = self.home.clone();
+        let cwd = std::path::PathBuf::from(".");
+        self.data = AppData::load(&home, &cwd);
+        self.settings = Some(crate::data::load_settings(&home));
+        cx.notify();
+    }
+
     /// Reload data from the shared index (used by the live-refresh watcher
     /// landing with M2.5; kept on the model for the skeleton).
     #[allow(dead_code)]
@@ -426,13 +438,89 @@ impl gpui::Render for ObeliskApp {
                             .unwrap_or_else(|| crate::data::SettingsSnapshot {
                                 raw: serde_json::json!({}),
                             });
+                    // Editable data-source rows: one per builtin provider,
+                    // with the effective root (custom override or default).
+                    let overrides: std::collections::HashMap<String, String> =
+                        snapshot.provider_roots().into_iter().collect();
+                    let mut rows = Vec::new();
+                    for (id, label, default_root) in
+                        obelisk_core::provider_settings::builtin_provider_defaults(
+                            &self.home,
+                            std::path::Path::new("."),
+                        )
+                    {
+                        let custom = overrides.get(id).cloned();
+                        let current = custom
+                            .clone()
+                            .unwrap_or_else(|| default_root.to_string_lossy().into_owned());
+                        rows.push(crate::views::ProviderRootRow {
+                            id,
+                            label,
+                            current,
+                            is_custom: custom.is_some(),
+                            input: cx.new(adabraka_ui::components::input_state::InputState::new),
+                        });
+                    }
+                    let save_home = self.home.clone();
+                    let save_handle = cx.entity();
                     crate::views::SettingsView {
-                        provider_roots: snapshot.provider_roots(),
                         editor_scheme: snapshot.editor_scheme(),
                         on_scheme: std::rc::Rc::new(move |scheme, window, cx| {
                             app_handle
                                 .update(cx, |app, cx| app.select_editor_scheme(scheme, window, cx));
                         }),
+                        roots: rows,
+                        on_save_root: std::rc::Rc::new(move |id, path, _window, cx| {
+                            let result = if path.is_empty() {
+                                clear_provider_root(&save_home, id)
+                            } else {
+                                crate::data::save_provider_root(&save_home, id, path)
+                            };
+                            match result {
+                                Ok(()) => {
+                                    // Rebuild with the new roots, then reload
+                                    // every open window from the shared index.
+                                    let home = save_home.clone();
+                                    cx.spawn(async move |cx| {
+                                        let build_home = home.clone();
+                                        let _ = cx
+                                            .background_spawn(async move {
+                                                obelisk_core::indexer::build_index(
+                                                    &build_home,
+                                                    obelisk_core::indexer::BuildIndexOptions {
+                                                        force: false,
+                                                        ignore_recent_build: true,
+                                                        ignore_daemon_ownership: true,
+                                                        provider_registry: None,
+                                                    },
+                                                )
+                                            })
+                                            .await;
+                                        let _ = cx.update(|cx| {
+                                            let apps = crate::daemon::registered_apps(cx);
+                                            for app in apps {
+                                                let _ = app.update(cx, |app, cx| {
+                                                    app.reload_from_index(cx);
+                                                });
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                                    save_handle.update(cx, |app, cx| {
+                                        app.settings_status =
+                                            Some(format!("Saved {id} root — rebuilding index…"));
+                                        cx.notify();
+                                    });
+                                }
+                                Err(error) => {
+                                    save_handle.update(cx, |app, cx| {
+                                        app.settings_status = Some(format!("Save failed: {error}"));
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        }),
+                        status: self.settings_status.clone(),
                     }
                     .into_any_element()
                 }
@@ -496,6 +584,7 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
                     input: app.search_state.clone(),
                     focus: app.sessions_focus.clone(),
                 },
+                app.data.index_ready,
             ))
             .into_any_element()
     }
@@ -578,6 +667,22 @@ fn main() {
         });
 }
 
+/// Remove a providerRoots override (empty input = reset to default).
+fn clear_provider_root(home: &std::path::Path, provider_id: &str) -> Result<(), String> {
+    let path = obelisk_core::provider_settings::settings_path(home);
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    if let Some(roots) = value
+        .get_mut("providerRoots")
+        .and_then(|r| r.as_object_mut())
+    {
+        roots.remove(provider_id);
+    }
+    let serialized = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    std::fs::write(&path, serialized).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---- Sidebar (App.vue aside port) ------------------------------------------
 
 /// One inline SVG icon from the embedded asset table, tinted by `color`.
@@ -610,16 +715,30 @@ type SidebarClick = Box<dyn Fn(&mut ObeliskApp, &mut gpui::Window, &mut Context<
 
 /// One sidebar row (`.sidebar-item`): icon + label + mono badge, 28px tall,
 /// 5px radius; active gets the accent-soft pill plus the 2px accent rail.
+/// Everything one sidebar row needs to render (keeps `sidebar_row` under
+/// clippy's argument budget).
+pub struct SidebarRowSpec {
+    pub id: gpui::SharedString,
+    pub icon_name: Option<&'static str>,
+    pub label: String,
+    pub badge: Option<usize>,
+    pub active: bool,
+    pub sub: bool,
+}
+
 fn sidebar_row(
-    id: gpui::SharedString,
-    icon_name: Option<&str>,
-    label: &str,
-    badge: Option<usize>,
-    active: bool,
-    sub: bool,
+    spec: SidebarRowSpec,
     on_click: SidebarClick,
     cx: &mut Context<ObeliskApp>,
 ) -> gpui::AnyElement {
+    let SidebarRowSpec {
+        id,
+        icon_name,
+        label,
+        badge,
+        active,
+        sub,
+    } = spec;
     let row = gpui::div()
         .id(id)
         .flex()
@@ -700,7 +819,6 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
         .border_r_1()
         .border_color(theme::HAIRLINE_STRONG)
         .bg(theme::SIDEBAR_BG)
-        .overflow_y_scroll()
         // Brand row (36px, hairline below): logo + name.
         .child(
             gpui::div()
@@ -729,48 +847,56 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                 .pb_2()
                 .child(section_title("Library"))
                 .child(sidebar_row(
-                    "nav-sessions".into(),
-                    Some("sessions"),
-                    "Sessions",
-                    Some(session_total),
-                    current_view == crate::views::AppView::Sessions && !in_timeline,
-                    false,
+                    SidebarRowSpec {
+                        id: "nav-sessions".into(),
+                        icon_name: Some("sessions"),
+                        label: "Sessions".to_string(),
+                        badge: Some(session_total),
+                        active: current_view == crate::views::AppView::Sessions && !in_timeline,
+                        sub: false,
+                    },
                     Box::new(|app, window, cx| {
                         app.select_view(crate::views::AppView::Sessions, window, cx);
                     }),
                     cx,
                 ))
                 .child(sidebar_row(
-                    "nav-memory".into(),
-                    Some("memory"),
-                    "Memory",
-                    Some(memory_active + memory_archived),
-                    current_view == crate::views::AppView::Memory && !in_timeline,
-                    false,
+                    SidebarRowSpec {
+                        id: "nav-memory".into(),
+                        icon_name: Some("memory"),
+                        label: "Memory".to_string(),
+                        badge: Some(memory_active + memory_archived),
+                        active: current_view == crate::views::AppView::Memory && !in_timeline,
+                        sub: false,
+                    },
                     Box::new(|app, window, cx| {
                         app.select_view(crate::views::AppView::Memory, window, cx);
                     }),
                     cx,
                 ))
                 .child(sidebar_row(
-                    "nav-memory-active".into(),
-                    Some("dot-filled"),
-                    "Active",
-                    Some(memory_active),
-                    current_view == crate::views::AppView::Memory && !in_timeline,
-                    true,
+                    SidebarRowSpec {
+                        id: "nav-memory-active".into(),
+                        icon_name: Some("dot-filled"),
+                        label: "Active".to_string(),
+                        badge: Some(memory_active),
+                        active: current_view == crate::views::AppView::Memory && !in_timeline,
+                        sub: true,
+                    },
                     Box::new(|app, window, cx| {
                         app.select_view(crate::views::AppView::Memory, window, cx);
                     }),
                     cx,
                 ))
                 .child(sidebar_row(
-                    "nav-memory-archived".into(),
-                    Some("dot-outline"),
-                    "Archived",
-                    Some(memory_archived),
-                    false,
-                    true,
+                    SidebarRowSpec {
+                        id: "nav-memory-archived".into(),
+                        icon_name: Some("dot-outline"),
+                        label: "Archived".to_string(),
+                        badge: Some(memory_archived),
+                        active: false,
+                        sub: true,
+                    },
                     Box::new(|app, window, cx| {
                         app.select_view(crate::views::AppView::Memory, window, cx);
                     }),
@@ -786,24 +912,28 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                 .pb_2()
                 .child(section_title("Stats"))
                 .child(sidebar_row(
-                    "nav-activity".into(),
-                    Some("activity"),
-                    "Activity",
-                    None,
-                    current_view == crate::views::AppView::Activity && !in_timeline,
-                    false,
+                    SidebarRowSpec {
+                        id: "nav-activity".into(),
+                        icon_name: Some("activity"),
+                        label: "Activity".to_string(),
+                        badge: None,
+                        active: current_view == crate::views::AppView::Activity && !in_timeline,
+                        sub: false,
+                    },
                     Box::new(|app, window, cx| {
                         app.select_view(crate::views::AppView::Activity, window, cx);
                     }),
                     cx,
                 ))
                 .child(sidebar_row(
-                    "nav-recap".into(),
-                    Some("recap"),
-                    "Recap",
-                    None,
-                    current_view == crate::views::AppView::Recap && !in_timeline,
-                    false,
+                    SidebarRowSpec {
+                        id: "nav-recap".into(),
+                        icon_name: Some("recap"),
+                        label: "Recap".to_string(),
+                        badge: None,
+                        active: current_view == crate::views::AppView::Recap && !in_timeline,
+                        sub: false,
+                    },
                     Box::new(|app, window, cx| {
                         app.select_view(crate::views::AppView::Recap, window, cx);
                     }),
@@ -822,41 +952,57 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                 .px(px(6.0))
                 .pt_2()
                 .child(section_title("Projects"))
-                .children(projects.iter().map(|p| {
-                    let is_selected = current_view == crate::views::AppView::Sessions
-                        && !in_timeline
-                        && selected_project.as_deref() == Some(p.slug.as_str());
-                    let slug = p.slug.clone();
-                    let count = p.session_count;
-                    sidebar_row(
-                        format!("project-{slug}").into(),
-                        Some("folder"),
-                        &p.slug,
-                        Some(count),
-                        is_selected,
-                        false,
-                        Box::new(move |app, window, cx| {
-                            app.select_view(crate::views::AppView::Sessions, window, cx);
-                            let next = if app.selected_project.as_deref() == Some(slug.as_str()) {
-                                None
-                            } else {
-                                Some(slug.clone())
-                            };
-                            app.select_project(next, window, cx);
-                        }),
-                        cx,
-                    )
-                })),
+                // The list scrolls inside the section (`.sidebar-list`),
+                // so the bottom Settings row never leaves the viewport.
+                .child(
+                    gpui::div()
+                        .id("project-list")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .children(projects.iter().map(|p| {
+                            let is_selected = current_view == crate::views::AppView::Sessions
+                                && !in_timeline
+                                && selected_project.as_deref() == Some(p.slug.as_str());
+                            let slug = p.slug.clone();
+                            let count = p.session_count;
+                            sidebar_row(
+                                SidebarRowSpec {
+                                    id: format!("project-{slug}").into(),
+                                    icon_name: Some("folder"),
+                                    label: p.slug.clone(),
+                                    badge: Some(count),
+                                    active: is_selected,
+                                    sub: false,
+                                },
+                                Box::new(move |app, window, cx| {
+                                    app.select_view(crate::views::AppView::Sessions, window, cx);
+                                    let next =
+                                        if app.selected_project.as_deref() == Some(slug.as_str()) {
+                                            None
+                                        } else {
+                                            Some(slug.clone())
+                                        };
+                                    app.select_project(next, window, cx);
+                                }),
+                                cx,
+                            )
+                        })),
+                ),
         )
         // Settings pinned to the bottom above a hairline.
         .child(section_divider())
         .child(gpui::div().px(px(6.0)).pt_1p5().pb_2().child(sidebar_row(
-            "nav-settings".into(),
-            Some("settings"),
-            "Settings",
-            None,
-            current_view == crate::views::AppView::Settings,
-            false,
+            SidebarRowSpec {
+                id: "nav-settings".into(),
+                icon_name: Some("settings"),
+                label: "Settings".to_string(),
+                badge: None,
+                active: current_view == crate::views::AppView::Settings,
+                sub: false,
+            },
             Box::new(|app, window, cx| {
                 app.select_view(crate::views::AppView::Settings, window, cx);
             }),

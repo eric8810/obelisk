@@ -33,6 +33,9 @@ pub struct AppData {
     /// Memory registry counts for the sidebar badges.
     pub memory_active: usize,
     pub memory_archived: usize,
+    /// Whether an index exists and has completed at least one build —
+    /// drives the "building vs. genuinely empty" empty-state message.
+    pub index_ready: bool,
 }
 
 impl AppData {
@@ -46,11 +49,20 @@ impl AppData {
         let projects = read_projects(&conn);
         let sessions = read_sessions(&conn);
         let (memory_active, memory_archived) = memory_counts(&conn);
+        let index_ready = conn
+            .query_row(
+                "SELECT COUNT(*) FROM index_state WHERE jsonl_path = '__last_build__'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)
+            .unwrap_or(false);
         Self {
             projects,
             sessions,
             memory_active,
             memory_archived,
+            index_ready,
         }
     }
 
@@ -287,6 +299,44 @@ pub fn read_recap(home: &Path, filename: &str) -> Option<serde_json::Value> {
     }
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// Persist one provider root override (`providerRoots[id]` in settings.json).
+/// Plain-file write like the editor scheme: it never touches the SQLite
+/// index, so it stays legal regardless of which process owns DB writes.
+pub fn save_provider_root(home: &Path, provider_id: &str, root: &str) -> Result<(), String> {
+    let settings_path = obelisk_core::provider_settings::settings_path(home);
+    let mut value = match obelisk_core::provider_settings::read_persisted_provider_settings(home) {
+        obelisk_core::provider_settings::SettingsRead::Ok(value) => value,
+        obelisk_core::provider_settings::SettingsRead::Failed(error) => {
+            return Err(error);
+        }
+    };
+    if !value.is_object() {
+        return Err("settings.json is not a JSON object".to_string());
+    }
+    let roots = value
+        .as_object_mut()
+        .unwrap()
+        .entry("providerRoots")
+        .or_insert_with(|| serde_json::json!({}));
+    if !roots.is_object() {
+        return Err("providerRoots in settings.json is not an object".to_string());
+    }
+    roots
+        .as_object_mut()
+        .unwrap()
+        .insert(provider_id.to_string(), serde_json::json!(root));
+    let serialized = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    let dir = settings_path
+        .parent()
+        .ok_or("settings path has no parent")?
+        .to_path_buf();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let temporary = settings_path.with_extension("json.tmp");
+    std::fs::write(&temporary, serialized).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, &settings_path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---- Settings (Vue settings:get / settings:set parity; the settings file
