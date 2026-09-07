@@ -1,0 +1,34 @@
+// Copyright (C) 2026 tommy0103 and contributors.
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// npm platform-binary wrapper scaffold (ADR-0013 M1.7).
+//
+// The npm-distributed CLI becomes a thin wrapper that ships the prebuilt
+// Rust binary for the install platform via optionalDependencies, falling
+// back to the TS implementation only if the platform package is absent.
+//
+// The TS CLI keeps the npm main slot until the Stage 1 acceptance gate
+// passes (plan §M1.7); this scaffold is published after that. Layout:
+//
+//   packaging/npm-wrapper/
+//   ├── package.json      — the wrapper package (name: @obelisk-apps/cli-bin)
+//   ├── bin/obelisk.js    — dispatches to the platform binary or the TS CLI
+//   └── README.md         — publish flow
+
+{
+  "name": "@obelisk-apps/cli-bin",
+  "version": "0.2.0",
+  "description": "Obelisk CLI wrapper — dispatches to the platform Rust binary.",
+  "license": "AGPL-3.0",
+  "type": "module",
+  "bin": {
+    "obelisk": "bin/obelisk.js"
+  },
+  "optionalDependencies": {
+    "@obelisk-apps/cli-linux-x86_64": "0.2.0",
+    "@obelisk-apps/cli-linux-aarch64": "0.2.0",
+    "@obelisk-apps/cli-macos-x86_64": "0.2.0",
+    "@obelisk-apps/cli-macos-aarch64": "0.2.0",
+    "@obelisk-apps/cli-windows-x86_64": "0.2.0"
+  }
+}

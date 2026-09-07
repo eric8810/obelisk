@@ -1,0 +1,24 @@
+[package]
+name = "obelisk-app"
+description = "Obelisk desktop app — pure GPUI (fc-gpui + fc-ui), no webview, no JS runtime"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "obelisk-app"
+path = "src/main.rs"
+
+[dependencies]
+obelisk-core = { workspace = true }
+gpui = { package = "fc-gpui", version = "0.9", default-features = false, features = [
+  "font-kit",
+  "wayland",
+  "x11",
+] }
+fc-ui = { version = "0.8", features = ["markdown", "image-default-formats"] }
+futures = "0.3"
+rusqlite = { workspace = true }
+serde_json = { workspace = true }

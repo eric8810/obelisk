@@ -5,8 +5,8 @@
   <img src=".github/assets/obelisk-wordmark-l2.svg" alt="Obelisk" width="540">
 </picture>
 
-[![stars](https://img.shields.io/github/stars/tommy0103/obelisk?style=flat-square)](https://github.com/tommy0103/obelisk/stargazers)
-[![version](https://img.shields.io/github/v/tag/tommy0103/obelisk?label=version&style=flat-square)](https://github.com/tommy0103/obelisk/releases)
+[![stars](https://img.shields.io/github/stars/eric8810/obelisk?style=flat-square)](https://github.com/eric8810/obelisk/stargazers)
+[![version](https://img.shields.io/github/v/tag/eric8810/obelisk?label=version&style=flat-square)](https://github.com/eric8810/obelisk/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
 Past Claude Code, Codex, Kimi Code, Pi, and DeepSeek Harness sessions -- queryable by your agent, browsable by you.
@@ -19,11 +19,9 @@ Past Claude Code, Codex, Kimi Code, Pi, and DeepSeek Harness sessions -- queryab
 
 Obelisk has two sides that share one SQLite index:
 
-**Agent side** — the `obelisk` CLI owns the local runtime, while a separate
-agent skill teaches coding agents how to search and query their session history.
-The agent writes JS queries, runs them locally, and answers in plain language.
+**Agent side** — the `obelisk` CLI (a standalone Rust binary) owns the local runtime, while a separate agent skill teaches coding agents how to search and query their session history. The agent writes JS queries, runs them locally, and answers in plain language.
 
-**App side** — an Electron desktop app for humans to browse sessions, manage memories, view usage stats, and see weekly recap cards.
+**App side** — a native desktop app (Rust + GPUI) for humans to browse sessions, manage memories, view usage stats, and see weekly recap cards. The app is tray-resident: its daemon watches the provider trees, maintains the index incrementally, and owns index writes while it runs (ADR-0013 Stage 3).
 
 Both read from the same `~/.obelisk/obelisk.sqlite` database. The indexer reads Claude Code transcripts from `~/.claude/projects`, Codex transcripts from `~/.codex/sessions` and `~/.codex/archived_sessions`, Kimi Code sessions from `~/.kimi-code/sessions` (or `$KIMI_CODE_HOME/sessions`), Pi sessions from `~/.pi/agent/sessions`, and DeepSeek Harness sessions from `~/.dsh/sessions` (or `$DSH_HOME/sessions`).
 
@@ -33,10 +31,7 @@ Obelisk indexes every provider into the same SQLite schema instead of keeping se
 
 Codex root threads become normal Obelisk sessions. Codex child threads are attached through the same `subagents` table when parent-thread metadata is available. Codex does not emit Claude-style workflow metadata, so workflow tables may be empty for Codex-only history.
 
-Kimi session directories become one Obelisk session each. Main and child-agent
-`wire.jsonl` streams are projected into the same messages, tools, summaries and
-subagents tables. Undo/clear is handled as a full session replay, so retracted
-wire records do not remain in the index.
+Kimi session directories become one Obelisk session each. Main and child-agent `wire.jsonl` streams are projected into the same messages, tools, summaries and subagents tables. Undo/clear is handled as a full session replay, so retracted wire records do not remain in the index.
 
 Pi JSONL v1-v3 sessions are projected through the same provider contract. Pi's tree, branch summaries, compactions, durable leaf, retained checkpoint tail, custom messages, bash records, tool calls, token usage, and raw JSONL evidence stay inside the adapter; no Pi-specific database or renderer branch is needed. Active visibility follows Pi's own context rules: a retained tail replaces pre-compaction ancestors even when those physical entries still exist and bounds any later legacy compaction, while a legacy-only chain retains ancestors beginning at `firstKeptEntryId`. Missing parents form orphan branch roots, matching Pi's recovery behavior. Pi entries that the source explicitly superseded are stored as `inactive`: the app and normal agent queries omit them, while supported query helpers can include them with `includeInactive: true`. Display-suppressed or transport-only records remain `hidden` and are never returned by those helpers.
 
@@ -79,7 +74,7 @@ agent — not into your terminal:
 
 ```text
 Install Obelisk by fetching and following this guide:
-curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/eric8810/obelisk/main/SKILL.md
 ```
 
 The agent will ask before changing your machine, install and verify the CLI,
@@ -89,17 +84,18 @@ the query skill itself.
 
 #### Install manually
 
-Obelisk requires Node.js 22.13 or newer. Install the platform-neutral CLI:
+The default path is the standalone Rust binary — no Node.js required:
 
 ```bash
-npm install --global @obelisk-apps/cli
+curl -fsSL https://raw.githubusercontent.com/eric8810/obelisk/main/install.sh | sh
 obelisk --version
 ```
 
-On macOS, Linux, or WSL, the CLI-only installer is equivalent:
+The npm-distributed wrapper (identical binary, npm-managed) is still available
+for teams that prefer it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/install.sh | sh
+npm install --global @obelisk-apps/cli
 ```
 
 Then install the agent skill:
@@ -131,7 +127,7 @@ Runs it via obelisk --query <script>
 Reads the JSON result, answers in natural language
 ```
 
-Core API: `search()`, `context()`, `sql()`, plus structured helpers (`sessions`, `memories`, `summaries`, `workflows`, `failures`, `fileHistory`, etc).
+Core API: `search()`, `context()`, `sql()`, plus structured helpers (`sessions`, `memories`, `summaries`, `workflows`, `failures`, `fileHistory`, etc). Queries run in a QuickJS sandbox (rquickjs) with a 30s kill switch covering both synchronous loops and loops after `await`.
 
 ### Memory layer
 
@@ -139,54 +135,46 @@ When a retrieval produces a conclusion worth keeping, the agent proposes a markd
 
 ## App: A surface for humans
 
-A companion desktop app for browsing the same index maintained by the CLI or
-the app daemon.
+A companion desktop app for browsing the same index. The app is tray-resident:
+closing its window keeps the process alive (and the index fresh); quitting it
+hands index writes back to the CLI.
 
 <div align="center">
-  <img src=".github/assets/app-screenshot.png" alt="Obelisk App" width="720">
+  <img src=".github/assets/app-sessions.png" alt="Obelisk sessions view" width="355">
+  <img src=".github/assets/app-screenshot.png" alt="Obelisk session timeline" width="355">
 </div>
 
-- **Sessions** — browse all sessions with search, project filtering, readable tool calls (diffs, terminal output, file viewers)
+- **Sessions** — browse all sessions with search (full-text, same FTS as the CLI), project filtering, readable tool calls (diffs, terminal output, file references)
+- **Timeline** — full session timeline with images, branch disclosure, and live follow-tail while the daemon indexes
 - **Memory** — list and detail views for registered memory files
-- **Activity** — GitHub-style heatmap, weekly/cumulative token charts
-- **Recap** — shareable weekly/monthly recap cards with archetype theming
-- **Settings** — data source configuration, auto-refresh, rebuild index
+- **Activity** — usage stats per model/project/session
+- **Recap** — weekly recap cards (weeks start Monday, ISO week labels)
+- **Settings** — provider roots, editor scheme for file references
 
-Prebuilt releases are currently available for macOS from
-[Releases](https://github.com/tommy0103/obelisk/releases). The source app can be
-run locally on macOS, Windows, and Linux.
+Prebuilt binaries are published from
+[Releases](https://github.com/eric8810/obelisk/releases). The source app can be
+run locally on Linux, macOS, and Windows (a GPU/software-Vulkan-capable display
+is required for GPUI).
 
 ### Run locally
 
-Install [Node.js 22](https://nodejs.org/) and npm, then run the app from its own
-package directory:
-
 ```bash
-git clone https://github.com/tommy0103/obelisk.git
-cd obelisk/app
-npm ci
-npm run dev
+git clone https://github.com/eric8810/obelisk.git
+cd obelisk
+cargo run --release -p obelisk-app
 ```
 
-`electron-vite` starts the renderer dev server and launches Electron. On first run, Obelisk creates `~/.obelisk/obelisk.sqlite`, indexes the available registered-provider transcripts, and then watches them for changes. The default sources include `~/.claude/projects`, `~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.kimi-code/sessions`, and `~/.pi/agent/sessions`; use **Settings** to point the app at different directories. On Windows, Obelisk also checks common WSL distributions for the Claude Code directory.
+On first run, Obelisk creates `~/.obelisk/obelisk.sqlite`, indexes the
+available registered-provider transcripts, and then watches them for changes.
+The default sources include `~/.claude/projects`, `~/.codex/sessions`,
+`~/.codex/archived_sessions`, `~/.kimi-code/sessions`, and
+`~/.pi/agent/sessions`; point the app at different directories via
+`~/.obelisk/settings.json` (`providerRoots`).
 
-### Debug the app
-
-- Renderer changes use Vite hot module replacement. Open Electron DevTools with
-  `Cmd+Option+I` on macOS or `Ctrl+Shift+I` on Windows/Linux.
-- Main-process and preload logs appear in the terminal running `npm run dev`;
-  their source changes are rebuilt by electron-vite.
-- To attach a Node debugger to the Electron main process, start it with
-  `npm run dev -- --inspect=5858`, then attach your debugger to port `5858`.
-- The development app reads and updates the real `~/.obelisk` index. Back it up
-  before testing destructive rebuilds. For an isolated run, launch with a
-  disposable home directory (`HOME=/tmp/obelisk-dev npm run dev` on
-  macOS/Linux, or set a temporary `USERPROFILE` first on Windows), then select
-  fixture source directories in **Settings**.
-
-`better-sqlite3` provides prebuilt binaries for common platforms. If `npm ci`
-falls back to compiling it locally, install the platform's C/C++ build tools and
-run `npm ci` again.
+The development app reads and updates the real `~/.obelisk` index. Back it up
+before testing destructive rebuilds. For an isolated run, launch with a
+disposable home directory (`HOME=/tmp/obelisk-dev cargo run --release -p obelisk-app`
+on macOS/Linux) and configure fixture source directories in settings.
 
 ## What gets indexed
 
@@ -205,56 +193,39 @@ Full-text search via FTS5 covers all layers.
 ## Structure
 
 ```
-packages/core/                # @obelisk/core npm workspace (TypeScript + ESM)
-├── src/
-│   ├── providers/
-│   │   ├── types.ts          # Provider + TranscriptRecord contract
-│   │   ├── claude.ts         # Claude Code adapter (line-incremental)
-│   │   ├── codex.ts          # Codex adapter (full-reparse)
-│   │   ├── kimi.ts           # Kimi Code adapter (session projection)
-│   │   └── pi.ts             # Pi adapter (tree-aware full-reparse)
-│   ├── session-detail.ts     # Provider-independent transcript projection
-│   ├── persist.ts            # Binding-agnostic record writer (upsert/merge)
-│   ├── tx.ts                 # Write transaction + connection config
-│   ├── write-coordinator.ts  # Bounded retry policy
-│   ├── writer-lease.ts       # Cross-process single-writer lease (SQLite lock DB)
-│   ├── core.ts               # buildIndex / searchText / executeQuery / executeAttune
-│   ├── indexer.ts            # Skill orchestration (discover → persist → finalize)
-│   ├── parsing.ts            # Pure helpers (node:sqlite-free, app-consumable)
-│   ├── db.ts                 # node:sqlite lifecycle + migrations
-│   ├── query.ts              # Query/attune sandbox API (helpers)
-│   └── schema.sql            # SQLite schema (single source of truth)
-├── package.json
-└── dist/                     # Generated package JS, declarations, and schema
+crates/
+├── obelisk-core/              # providers, persist, schema, lease, watcher, sandbox
+│   ├── src/providers/         # Claude, Codex, Kimi, Pi, DeepSeek Harness adapters
+│   ├── src/query.rs           # Query/attune sandbox API (helpers)
+│   ├── src/indexer.rs         # Skill orchestration (discover → persist → finalize)
+│   ├── src/watcher.rs         # Hybrid notify+poll watcher (ADR-0009)
+│   ├── src/writer_lease.rs    # Cross-process single-writer lease (SQLite lock DB)
+│   └── src/schema.sql         # SQLite schema (single source of truth)
+├── obelisk-cli/               # Thin binary, same CLI contract as before
+└── obelisk-app/               # GPUI desktop app (timeline, views, resident daemon)
 
-packages/cli/                 # @obelisk-apps/cli npm workspace
-├── src/obelisk.ts            # CLI shell + skill installer delegation
-├── scripts/build.mjs         # Compiles CLI + readable Core into one package
-├── package.json
-└── dist/                     # Generated platform-neutral npm payload
+packages/dsh-plugin/           # DSH Cordis plugin (TypeScript, skill chain)
+skill-doc/                     # Source for the docs-only obelisk agent skill
+├── SKILL.md                   # Query and memory workflow
+└── references/                # Progressive-disclosure API/schema/pattern docs
+    └── recap/                 # Per-card recap retrieval + writing references
 
-skill-doc/                    # Source for the docs-only obelisk agent skill
-├── SKILL.md                  # Query and memory workflow
-└── references/               # Progressive-disclosure API/schema/pattern docs
-    └── recap/                # Per-card recap retrieval + writing references
-
-app/                          # Electron desktop app (electron-vite + Vue)
-├── src/main/                 # TypeScript main process (consumes shared core)
-├── src/preload/              # CJS preload (sandbox)
-├── src/renderer/             # Vue renderer
-└── electron.vite.config.ts
-
-packaging/                    # Skill publish infrastructure
-├── build-skill.mjs           # Builds the docs-only skill artifact
-├── skill-package.json
-├── skill-README.md
-├── skill-LICENSE             # MIT (relicensed for the skill artifact)
+packaging/
+├── build-skill.mjs            # Builds the docs-only skill artifact
+├── npm-wrapper/               # npm package that dispatches to the Rust binary
 └── publish-skill.sh
 
-SKILL.md                      # Remote one-time CLI + skill bootstrap guide
-install.sh                    # POSIX CLI-only installer
-CONTEXT.md                    # Project glossary
-docs/adr/                     # Architecture decision records (0001–0006)
+tests/
+├── e2e/                       # CLI E2E: 13 black-box scenarios (C1–C13)
+├── e2e-desktop/               # Desktop E2E: 11 scenarios (D1–D11)
+├── golden/                    # Frozen corpus + expected dump (Rust is the spec now)
+└── fixtures/                  # Per-provider corpus fixtures
+
+docs/adr/                      # Architecture decision records (0001–0013)
+docs/history/                  # Retired TS baseline artifacts (M1.0 reference)
+SKILL.md                       # Remote one-time CLI + skill bootstrap guide
+install.sh                     # POSIX installer (binary default, --npm wrapper)
+CONTEXT.md                     # Project glossary
 ```
 
 The optional `/obelisk recap` flow is loaded only for explicit `/obelisk recap` intent.
@@ -268,33 +239,28 @@ It starts at `skill-doc/references/recap/overview.md` and proceeds card-by-card:
 
 ### Generated build outputs
 
-- `packages/core/dist/` is produced by `npm run build:core`. It is the compiled
-  internal `@obelisk/core` workspace: JavaScript, type declarations, and
-  `schema.sql`.
-- `packages/cli/dist/` is produced by `npm run build:cli`. It is the publishable
-  `@obelisk-apps/cli` payload: the thin command shell, readable compiled Core,
-  and `schema.sql`.
 - `dist/obelisk-skill/` is produced by `npm run build:skill`. It is the
   docs-only skill artifact: `SKILL.md`, references, and skill package metadata.
 - Skill publishing stages that artifact at `skills/obelisk/` in the
   `obelisk-skill` repository; only `README.md` and `LICENSE` remain at the
   repository root for `npx skills` discovery.
-
-Both directories are generated and should not be edited by hand. The Electron
-app imports `packages/core/src/` directly so electron-vite can bundle Core.
+- `target/release/obelisk` and `target/release/obelisk-app` are the Rust
+  binaries built by cargo.
 
 ## Implementation Notes
 
 The index rebuilds incrementally — only new or modified JSONL files are re-parsed.
-When the optional app is running, it is the active indexer: it watches Claude
-project files and builds in a worker thread. A fresh `__app_heartbeat__` alone
-means the daemon owns writes, so CLI invocations remain read-only; a separate SQLite
-writer lease prevents cross-process writes from overlapping. The
-`__app_last_successful_build__` marker records index freshness, not ownership.
+While the desktop app runs, its resident daemon is the active indexer: it
+watches the provider trees and refreshes the `__app_heartbeat__` marker every
+30s. A fresh marker means the daemon owns writes, so CLI mutations skip with
+`daemon_active` (searches stay available); after the app exits the marker ages
+out within 60s and CLI builds recover. A separate SQLite writer lease prevents
+cross-process writes from overlapping. The `__app_last_successful_build__`
+marker records index freshness, not ownership.
 
-The CLI has zero runtime npm dependencies and uses Node 22's built-in
-`node:sqlite` with FTS5. The formal skill contains instructions and references,
-not a second executable runtime.
+The CLI is a standalone Rust binary with no Node.js runtime dependency; the npm
+wrapper dispatches to the same binary. The formal skill contains instructions
+and references, not a second executable runtime.
 
 20K lines of scattered JSONL → something the agent can search() and sql() against in milliseconds.
 
@@ -312,24 +278,24 @@ The parts worth knowing up front:
 - **Assert the requirement, not the implementation.** Copy the sentence from the
   issue into your test name.
 - **Transcript content is attacker-controlled.** Obelisk indexes third-party
-  agent logs; anything reaching `shell.*`, `fs.*`, `innerHTML`, or DDL is
-  deny-by-default.
+  agent logs; anything reaching the query sandbox, file-reference resolution, or
+  DDL is deny-by-default.
 - **Re-run verification after merging main.** A merge voids every result above
   it, including your own noted limitations.
 
-`CONTRIBUTING.md` also carries hard constraints per area — renderer/Electron,
-provider adapters, schema migrations, main process, and indexing/daemon
-ownership. The PR template mirrors them as per-area checklists.
+`CONTRIBUTING.md` also carries hard constraints per area — provider adapters,
+schema migrations, indexing/daemon ownership, and the desktop app. The PR
+template mirrors them as per-area checklists.
 
 ---
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=tommy0103%2Fobelisk&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=eric8810%2Fobelisk&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tommy0103/obelisk&type=date&theme=dark&legend=top-left&sealed_token=zGsTpxirzDypxpaSUQ4aiPpCQFVFbII1Xl68UlRRpVdaTr6NoPY_cEvprnA9kMMdmXnERYZn3uXo20PkKEiuoGQ8d-qD3nPDanawRUrZuFYnNPytlC2iTw" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tommy0103/obelisk&type=date&legend=top-left&sealed_token=zGsTpxirzDypxpaSUQ4aiPpCQFVFbII1Xl68UlRRpVdaTr6NoPY_cEvprnA9kMMdmXnERYZn3uXo20PkKEiuoGQ8d-qD3nPDanawRUrZuFYnNPytlC2iTw" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tommy0103/obelisk&type=date&legend=top-left&sealed_token=zGsTpxirzDypxpaSUQ4aiPpCQFVFbII1Xl68UlRRpVdaTr6NoPY_cEvprnA9kMMdmXnERYZn3uXo20PkKEiuoGQ8d-qD3nPDanawRUrZuFYnNPytlC2iTw" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=eric8810%2Fobelisk&type=date&theme=dark&sealed_token=zGsTpxirzDypxpaSUQ4aiPpCQFVFbII1Xl68UlRRpVdaTr6NoPY_cEvprnA9kMMdmXnERYZn3uXo20PkKEiuoGQ8d-qD3nPDanawRUrZuFYnNPytlC2iTw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=eric8810%2Fobelisk&type=date&theme=light&sealed_token=zGsTpxirzDypxpaSUQ4aiPpCQFVFbII1Xl68UlRRpVdaTr6NoPY_cEvprnA9kMMdmXnERYZn3uXo20PkKEiuoGQ8d-qD3nPDanawRUrZuFYnNPytlC2iTw" />
+   <img alt="Star History Chart" src="https://www.star-history.com/chart?repos=eric8810%2Fobelisk&type=Date" />
  </picture>
 </a>
 

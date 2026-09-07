@@ -1,10 +1,9 @@
 // Copyright (C) 2026 tommy0103 and contributors.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Flat ESLint config for the Obelisk root (Core + CLI + packaging + tests).
-// Scope: the root ESM/TS sources, including packages/core/src/ and
-// packages/cli/src/. The Electron app has its own package and toolchain and is
-// intentionally excluded (see docs/adr/0003).
+// Flat ESLint config for the Obelisk root. Scope: the DSH plugin (the one
+// remaining TS package, see ADR-0013 Stage 3), the packaging scripts, and
+// the E2E harness sources.
 
 import js from '@eslint/js';
 import globals from 'globals';
@@ -14,7 +13,6 @@ export default tseslint.config(
   {
     ignores: [
       'node_modules/**',
-      'app/**',
       'dist/**',
       'release/**',
       '.dev.docs/**',

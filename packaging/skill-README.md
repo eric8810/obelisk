@@ -9,7 +9,7 @@ Paste this into a coding agent with shell access:
 
 ```text
 Install Obelisk by fetching and following this guide:
-curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/eric8810/obelisk/main/SKILL.md
 ```
 
 The agent installs and verifies the CLI first, then asks whether this skill
@@ -34,12 +34,12 @@ Then in any Claude Code session:
 ## Source
 
 This repository is **auto-published** from the docs-only skill artifact of
-[tommy0103/obelisk](https://github.com/tommy0103/obelisk). Do not open pull
+[eric8810/obelisk](https://github.com/eric8810/obelisk). Do not open pull
 requests here — contribute to the source repo instead.
 
 ## License
 
 MIT — see [LICENSE](LICENSE) in this repository. The
-[source repository](https://github.com/tommy0103/obelisk) is AGPL-3.0; this
+[source repository](https://github.com/eric8810/obelisk) is AGPL-3.0; this
 skill documentation artifact is explicitly relicensed under MIT by the copyright
 holder.

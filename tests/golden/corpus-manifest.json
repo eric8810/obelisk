@@ -1,0 +1,58 @@
+{
+  "description": "Scale-1 golden corpus indexed by the TS CLI (obelisk v0.2.3). Counts are read from expected-dump.json (indexed truth), not from the generator.",
+  "generator": {
+    "script": "tests/golden/generate-corpus.mjs",
+    "args": [
+      "--out",
+      "<tmp>",
+      "--scale",
+      "1"
+    ],
+    "seed": 199301838,
+    "corpusEpoch": "2026-06-10T10:00:00Z"
+  },
+  "totals": {
+    "sessions": 8,
+    "messages": 111,
+    "tool_calls": 30,
+    "tool_results": 29,
+    "subagents": 4,
+    "workflows": 1,
+    "workflow_agents": 2,
+    "summaries": 5
+  },
+  "providers": {
+    "claude": {
+      "sessions": 2,
+      "messages": 29,
+      "tool_calls": 13
+    },
+    "codex": {
+      "sessions": 1,
+      "messages": 16,
+      "tool_calls": 5
+    },
+    "deepseek": {
+      "sessions": 1,
+      "messages": 19,
+      "tool_calls": 4
+    },
+    "kimi": {
+      "sessions": 1,
+      "messages": 18,
+      "tool_calls": 5
+    },
+    "pi": {
+      "sessions": 3,
+      "messages": 29,
+      "tool_calls": 3
+    }
+  },
+  "coverage": [
+    "claude: ai-title + history.jsonl titles, meta <command-name> envelope, skill_instructions meta, thinking/text/tool_use blocks (Read/Skill/Edit/Task/Workflow), tool_result with is_error + toolUseResult.filePath, away_summary, turn_duration, usage with cache tokens, gitBranch/version/cwd, plain subagent (.jsonl + .meta.json), workflow run json + workflowProgress agents + workflow-linked agent transcript (subagents/workflows/<runId>/agent-11.jsonl)",
+    "codex: session_meta, turn_context model, event_msg user/agent messages, response_item duplicate dedup, custom_tool_call(+output), function_call(+output), token_count, task_complete durations, collab_agent_spawn_end subagent spawn, thread_name_updated + session_index.jsonl titles, hidden <environment_context> user message, child subagent thread (thread_spawn parent)",
+    "deepseek: session.jsonl.zstd multi-frame checksummed zstd artifact, request/header model, user/assistant messages (reasoning/text/tool-call parts), tool/call + tool/result (incl. data.error), subagent spawn result link, session/title, root+child tree grouped as one unit",
+    "kimi: state.json + agents/main/wire.jsonl + agents/agent-7/wire.jsonl, config.update model, step.begin/content.part/tool.call/tool.result/step.end with usage, context.undo + context.clear replay, legacy protocol-1.0 embedded toolCalls, context.apply_compaction summary, subagent link via agent_id: result text",
+    "pi: session v3 headers, user/assistant/toolResult messages with usage + cost, toolCall blocks, inactive branch + branch_summary, legacy compaction (firstKeptEntryId), checkpoint compaction with retainedTail, leaf heads, orphan chain with missing parent, session_info titles"
+  ]
+}

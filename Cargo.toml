@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/obelisk-core", "crates/obelisk-cli", "crates/obelisk-app"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/eric8810/obelisk"
+rust-version = "1.85"
+
+[workspace.dependencies]
+obelisk-core = { path = "crates/obelisk-core" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rquickjs = { version = "0.12", features = ["full-async", "parallel"] }
+notify = "8"
+zstd = "0.13"
+chrono = "0.4"
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

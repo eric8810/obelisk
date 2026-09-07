@@ -1,18 +1,21 @@
 # Obelisk
 
 Obelisk is explicit memory infrastructure for coding agents: it indexes local
-Claude Code, Codex, and Kimi Code sessions into a queryable SQLite evidence layer, and a
-CodeAct runtime lets an agent write a small query, run it, and answer from real
-session history. This glossary pins the terms that are specific to Obelisk; it is
-not a spec.
+Claude Code, Codex, Kimi Code, Pi, and DeepSeek Harness sessions into a queryable
+SQLite evidence layer, and a CodeAct runtime lets an agent write a small query,
+run it, and answer from real session history. The runtime is Rust (ADR-0013):
+a standalone CLI binary, a GPUI desktop app with a resident indexing daemon,
+and a QuickJS sandbox for queries. This glossary pins the terms that are
+specific to Obelisk; it is not a spec.
 
 ## Runtime interface
 
 **Runtime interface**:
 The public contract, expressed as four verbs — `build`, `search(text)`,
-`query(code)`, `attune(code)`. CLI and a future MCP server are transports over
-this same shape; neither adds its own retrieval surface. The agent skill is
-docs-only guidance that invokes the CLI rather than a transport of its own.
+`query(code)`, `attune(code)`. The Rust CLI and the desktop app are both
+transports over this same shape; neither adds its own retrieval surface. The
+agent skill is docs-only guidance that invokes the CLI rather than a transport
+of its own.
 _Avoid_: API, tool surface
 
 **CodeAct**:
@@ -29,15 +32,15 @@ promoted to an external tool surface.
 ## Indexing
 
 **Provider adapter**:
-A pure per-source module (claude, codex, kimi, later pi, …) that owns its
+A pure per-source module (claude, codex, kimi, pi, dsh, …) that owns its
 descriptor, watch roots, discovery, parsing, cursor interpretation, and raw
 record lookup. It discovers `IndexUnit`s rather than assuming one transcript
 file per unit; Kimi uses a session directory containing multiple wire logs. It
 never opens or writes a database; adding a source means adding one adapter and
-registering it. The shared pure
-parse/discover helpers live in `packages/core/src/parsing.ts`, which imports only
-node:fs/path/os — deliberately node:sqlite-free so the compiled providers can be
-consumed by the app (whose Electron runtime has no `node:sqlite`).
+registering it. In the Rust runtime the adapters live in
+`crates/obelisk-core/src/providers/` and parse without touching a database
+connection, so both the CLI and the app consume them through the same
+persist layer.
 _Avoid_: parse core, parser, ingest
 
 **Transcript record**:
@@ -56,17 +59,17 @@ require prior state and are handled by the snapshot/patch seam instead. It never
 branches on provider and never infers provider semantics from message text.
 
 **Persist layer**:
-The single shared, provider- and binding-agnostic writer that consumes transcript records
-from any adapter and writes them into an injected SQLite handle inside a
-transaction. The binding is injected — `node:sqlite` (CLI) or
-`better-sqlite3` (app) — so there is one persist implementation, not one per
-binding.
+The single shared, provider-agnostic writer that consumes transcript records
+from any adapter and writes them into SQLite inside a transaction (one
+implementation in `crates/obelisk-core/src/persist.rs`; both the CLI and the
+desktop daemon call it through the same seam).
 _Avoid_: writer, sink, DAO
 
 **Daemon indexing mode**:
-Continuous incremental indexing driven by a long-lived process (the desktop app,
-later a CLI daemon) that watches transcript directories and keeps the index fresh
-as files change.
+Continuous incremental indexing driven by a long-lived process — the GPUI
+desktop app's resident daemon (ADR-0013 Stage 3: the app owns index writes).
+It watches transcript directories through the hybrid watcher and keeps the
+index fresh as files change, refreshing the daemon heartbeat every 30s.
 _Avoid_: watcher mode, live indexing
 
 **Passive pull mode**:

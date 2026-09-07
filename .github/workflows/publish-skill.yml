@@ -17,6 +17,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Verify DSH plugin package
+        run: npm run test:dsh
+
       - run: npm run build:skill
 
       - name: Push to obelisk-skill

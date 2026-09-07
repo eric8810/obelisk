@@ -35,7 +35,7 @@ On macOS, Linux, or WSL, the official installer performs the same CLI-only
 installation and never installs an agent skill:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/eric8810/obelisk/main/install.sh | sh
 ```
 
 Never use `sudo`, install a daemon, or download Obelisk from another source.

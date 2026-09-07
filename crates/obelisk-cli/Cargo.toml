@@ -1,0 +1,16 @@
+[package]
+name = "obelisk-cli"
+description = "Obelisk CLI — thin binary over obelisk-core (contract-identical to the TS CLI)"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "obelisk"
+path = "src/main.rs"
+
+[dependencies]
+obelisk-core = { workspace = true }
+serde_json = { workspace = true }

@@ -67,71 +67,61 @@ the test you added.
 
 ---
 
-## Renderer / Electron UI changes
+## Desktop app (GPUI) changes
 
-Proving the new element renders correctly is one third of the job. You also owe
-evidence that it does not disturb virtual scrolling, async timing, existing
-interactions, or the full Electron suites.
+The app lives in `crates/obelisk-app`. Behavior is verified black-box through
+`tests/e2e-desktop/` (11 scenarios, driver + vision assertions over real
+windows): run `node tests/e2e-desktop/run-desktop.mjs` after a
+`cargo build --release -p obelisk-app`.
 
-- Any change that can affect row height — new elements, async media, fonts,
-  spacing, the shape of `renderMarkdown` output — needs a **reader-anchor
-  assertion**: content above the viewport settling must not move the row the
-  user is looking at. Follow the existing pattern in
-  `app/tests/electron-session-virtualization.mjs`.
-- Cover **three states, not just the final one**: mount, size-available-but-not-
-  loaded, and load/error. Progressive images reach their final size long before
-  `load` fires; signalling only on `load` will miss it.
-- **Idle and mid-scroll are different scenarios.** `virtual-core`'s `resizeItem`
-  skips scroll compensation for already-measured rows when
-  `scrollDirection === 'backward'`, so drift can be zero at rest and large while
-  scrolling up. Test both.
-- Run `npm run test:electron:all` (all five suites), not only the suite you
-  added.
-- **Do not add `loading="lazy"` to virtualized rows.** Rows already mount near
-  the viewport; lazy only defers decode into the scroll itself.
-- **No hardcoded colors or type sizes inside shadow DOM.** Custom properties
-  pierce the shadow boundary — use `var(--muted)`, `var(--hairline-strong)`,
-  `var(--text-sm)`.
-- **One visual treatment per user-visible concept.** "Blocked source" and "failed
-  to load" are the same thing to a reader; they must not render two different
-  ways.
-- When you depend on a library's calling convention, either accept both shapes or
-  pin the assumption in code. A silent signature change that degrades every item
-  to a fallback is invisible to types and tests.
-- **Every renderer-side probe needs a deadline and an `error` → reject path.** A
-  promise with no rejection path plus a bare `await` turns a regression into a
-  hung CI job instead of a red one.
-- **No assertions with sub-pixel headroom.** Self-calibrate (e.g. take the median
-  gap of currently mounted rows as the baseline) instead of hardcoding a
-  threshold that a spacing tweak turns red.
+- **Scroll-stability assertions are required for any timeline change.** The
+  timeline follows tail while pinned and releases on user scroll-up; content
+  settling above the viewport must not move what the user is reading. Scenario
+  D3 (scroll follow) and D11 (live session follow) cover this — extend them if
+  your change can disturb it.
+- **Cover three states, not just the final one**: mount, data-loaded, and
+  empty/error. Views render from the shared index and may start empty while the
+  daemon builds.
+- **One visual treatment per user-visible concept.** "Blocked source" and
+  "failed to load" are the same thing to a reader; they must not render two
+  different ways.
+- **Every async probe needs a deadline and an error path.** A future with no
+  timeout turns a regression into a hung E2E run instead of a red one.
+- The app is tray-resident: closing the window must keep the process (and the
+  daemon heartbeat) alive — scenario D8 asserts exactly this. Any change to the
+  window lifecycle re-runs D7/D8.
+- GPUI exports no accessibility tree on X11, so the E2E driver clicks root pixel
+  coordinates. If you change the sidebar/row layout, update the driver's
+  coordinate tables in the same commit and re-run the full desktop suite.
 
 ## Provider adapters
 
-- **Read `claude.ts`, `codex.ts`, and `kimi.ts` before writing a new adapter.**
-  The conventions there are earned: zero-padded ordinals in ids
-  (`parsing.ts` uses `padStart(6, '0')`), the
+- **Read `claude.rs`, `codex.rs`, and `kimi.rs` (in
+  `crates/obelisk-core/src/providers/`) before writing a new adapter.** The
+  conventions there are earned: zero-padded ordinals in ids, the
   `__<provider>_canonical_transcript_vN__` marker, how `git_branch` is handled.
 - **Session identity must not be the source id alone.** Use a composite such as
   (normalized cwd, header id). Explicit session ids are usually project-local, so
   two projects may legitimately collide — and the second one indexed will
   overwrite the first.
-- **A test must actually call `discover()`.** Asserting the resolved root string
+- **A test must actually exercise discovery.** Asserting the resolved root string
   passes even when the directory-layout assumption is wrong.
 - **Verify directory layout against the upstream source or format docs**, not
   against what your own machine happens to look like. A tool's default root and
   its custom root often have different nesting.
 - **The canonical transcript invariant (ADR-0007) is a hard gate**: assembling
-  directly from your adapter must equal assembling after a SQLite round-trip. Any
-  design where duplicate ids merge or overwrite breaks it.
+  directly from your adapter must equal assembling after a SQLite round-trip
+  (`session_detail_tests.rs`). Any design where duplicate ids merge or overwrite
+  breaks it.
 - **Never drop a record just because it has no text.** Image-only messages and
   aborted turns that carry usage must still emit a row (`text: null`,
   `content_type: 'unknown'`), or token accounting and the timeline develop holes.
-- **Bump `indexVersionMarker` whenever you change uuid format, role
+- **Bump the index version marker whenever you change uuid format, role
   normalization, or anything else affecting already-stored rows.** Otherwise the
   mtime short-circuit in discovery leaves old-format rows in the database
   forever.
 - **Express "this should not be shown" with the existing `visibility` field**
-  (`providers/types.ts`), which is defined as provider-normalized display
+  (`providers/types.rs`), which is defined as provider-normalized display
   eligibility and already has a consumer in the assembler. Do not add a third
   meaning to `is_sidechain`.
 - **Cursors must detect same-millisecond rewrites**: mtime + ctime + size + inode,
@@ -143,13 +133,15 @@ interactions, or the full Electron suites.
 
 ## Schema and migrations
 
-- `schema.sql` is pinned by sha256 in `tests/provider-schema-stability.test.mjs`.
-  Changing it is an explicit decision plus a full re-index: justify it in the PR
-  and update the hash in the same commit. Prefer additive changes.
-- **Destructive DDL goes in one transaction.** The repository already has
-  `runWriteTransaction` (`packages/core/src/tx.ts`) and both SQLite adapters, and
-  the entry points already hold the writer lease — you do not need to invent a
-  migration marker.
+- `crates/obelisk-core/src/schema.sql` is the single source of truth
+  (`SCHEMA_SQL` embeds it verbatim), and the golden dump
+  (`tests/golden/expected-dump.json`) pins the resulting row shape. Changing the
+  schema is an explicit decision plus a full re-index: justify it in the PR and
+  regenerate the golden dump in the same commit. Prefer additive changes.
+- **Destructive DDL goes in one transaction.** The repository already has the
+  transaction runner (`crates/obelisk-core/src/tx.rs`), and the entry points
+  already hold the writer lease — you do not need to invent a migration
+  marker.
 - **Do not use the name of the target state as the completion marker.** If the
   process is interrupted after CREATE but before the rebuild finishes, comparing
   the current setting against the requested one reports success forever and the
@@ -162,33 +154,31 @@ interactions, or the full Electron suites.
 - **Any external input spliced into DDL needs an allowlist and an injection test
   case.**
 
-## Main process and untrusted input
+## Untrusted input (sandbox, file references, opener)
 
-- **Transcript paths must not reach `shell.openPath` unguarded.** On macOS,
-  `.app` / `.command` / `.sh` are executed, not opened. Confirmation dialogs must
-  default to Cancel.
+- **Transcript paths must not reach the OS file opener unguarded.** The
+  file-reference resolver (`crates/obelisk-app/src/file_reference.rs`) confines
+  targets to the session's own roots before handing anything to the opener. Keep
+  that containment; never open a path straight from transcript text.
 - **Reading a file because a transcript said so requires an allowlist**, scoped to
   the session's project cwd or known source roots.
-- **Do not decode untrusted text through `innerHTML` or a detached `<textarea>`.**
-  Decode the specific entities your markdown library actually emits, escape on
-  the way out, and pin "decode exactly once" with a test (`&amp;lt;` must stay
-  `&lt;`).
-- **No synchronous IO in the main process.** A network mount or UNC path freezes
-  the whole UI. Use `fs.promises`.
-- **Do not broaden interception beyond your feature.** Catching every `file:`
-  navigation when you only meant to handle markdown links affects everyone else.
-- **Main and preload sources are TypeScript** (ADR-0005). `app/tsconfig.json` sets
-  `checkJs: false`, so a `.mjs` module has no type coverage at all.
+- **The query sandbox is deny-by-default** (ADR-0013): no fs/net/process globals
+  reachable from QuickJS, a 30s kill covering both sync loops and loops after
+  `await`, and read-only `sql()`. New helpers must state which data they expose
+  and why it cannot mutate the index. Probe tests live in
+  `crates/obelisk-core/src/sandbox_tests.rs`.
+- **Do not broaden interception beyond your feature.** Handling every link
+  because you meant to handle one reference type affects everyone else.
 
 ## Indexing, daemon, and write ownership
 
-- **The heartbeat decides who may write.** While a daemon is fresh, the CLI side
-  is read-only: no write connection, no schema migration, no PRAGMA change, no
-  checkpoint, no indexing. Two narrow carve-outs, both recorded in ADR 0006:
-  the invocation-nonce freshness build, and memory mutations (`--attune`),
-  which write only the memory layer (`memories` + `memories_fts` via triggers)
-  and never migrate or configure the index. Guarded by
-  `tests/daemon-arbitration.test.mjs` and `tests/app-writer-lease.test.mjs`.
+- **The heartbeat decides who may write.** While the desktop daemon is fresh
+  (30s cadence, 60s window), the CLI side is read-only: no write connection, no
+  schema migration, no PRAGMA change, no checkpoint, no indexing. Two narrow
+  carve-outs, both recorded in ADR-0006: the invocation-nonce freshness build,
+  and memory mutations (`--attune`), which write only the memory layer. Guarded
+  by the indexer tests (`daemon_heartbeat_owns_the_build`,
+  `write_daemon_heartbeat_*`) and E2E scenarios C6/C13.
 - **If you add something that needs periodic refresh, prove its refresh point is
   actually called repeatedly.** Hanging a full rebuild off a first-run-only gate
   means it runs once and never again — and for existing installations, never at
@@ -200,6 +190,11 @@ interactions, or the full Electron suites.
   rows written with `INSERT OR REPLACE` do not fire DELETE triggers while
   `recursive_triggers` is off, so a trigger-based refresh would leave stale text
   behind.
+- **The daemon writes its own heartbeat under the writer lease**
+  (`write_daemon_heartbeat` in `crates/obelisk-core/src/indexer.rs`), and daemon
+  builds pass `ignore_daemon_ownership: true` — the process that owns the marker
+  must not be suppressed by it. The writer lease stays the sole write
+  arbitrator (ADR-0006).
 
 ---
 
@@ -207,15 +202,20 @@ interactions, or the full Electron suites.
 
 Every PR:
 
-1. `npm test`, `npm run typecheck` (root and app tsconfig), `npm run lint` — all
-   green. Quote the **numbers** in the PR description.
-2. Touching `app/` also requires `npm run test:electron:all`.
-3. **After merging main, re-run everything.** Conclusions from before the merge —
+1. `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test --workspace`
+   — all green. Quote the **numbers** in the PR description.
+2. Touching `crates/` also requires the CLI E2E suite:
+   `npm run test:e2e` (needs `cargo build --release` first).
+3. Touching the desktop app requires the desktop suite:
+   `node tests/e2e-desktop/run-desktop.mjs` (needs a display).
+4. Touching the skill chain requires `npm run test:dsh` and
+   `npm run build:skill`.
+5. **After merging main, re-run everything.** Conclusions from before the merge —
    including any "known limitation" you documented — are void.
-4. **Do not loosen an existing assertion.** If one must change, give it its own
+6. **Do not loosen an existing assertion.** If one must change, give it its own
    section in the PR description explaining why the original was wrong.
-5. **Fixtures are real provider output**, not hand-written approximations.
-6. **Confirm your new tests actually run in CI** (`.github/workflows/`).
+7. **Fixtures are real provider output**, not hand-written approximations.
+8. **Confirm your new tests actually run in CI** (`.github/workflows/`).
 
 ## Scope and review
 

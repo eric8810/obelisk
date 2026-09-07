@@ -13,3 +13,5 @@ HANDOFF.md
 app/build/
 app/scripts/
 app/*.html
+/target/
+tests/e2e*/evidence/

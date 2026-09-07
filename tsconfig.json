@@ -3,8 +3,12 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
-    "types": ["node"],
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
@@ -16,13 +20,15 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["packages/core/src/**/*", "packages/cli/src/**/*", "packages/adaptive-watcher/src/**/*", "packages/dsh-plugin/src/**/*", "tests/**/*"],
+  "include": [
+    "packages/dsh-plugin/src/**/*",
+    "packaging/**/*.mjs",
+    "tests/**/*.mjs"
+  ],
   "exclude": [
     "node_modules",
-    "app",
     "dist",
     "release",
-    "tests/app-*.test.mjs",
-    "tests/recap-capture-query.test.mjs"
+    "tests/e2e*/evidence/**"
   ]
 }
