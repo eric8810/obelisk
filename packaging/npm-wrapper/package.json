@@ -17,7 +17,7 @@
 
 {
   "name": "@obelisk-apps/cli-bin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Obelisk CLI wrapper — dispatches to the platform Rust binary.",
   "license": "AGPL-3.0",
   "type": "module",
@@ -25,10 +25,10 @@
     "obelisk": "bin/obelisk.js"
   },
   "optionalDependencies": {
-    "@obelisk-apps/cli-linux-x86_64": "0.2.0",
-    "@obelisk-apps/cli-linux-aarch64": "0.2.0",
-    "@obelisk-apps/cli-macos-x86_64": "0.2.0",
-    "@obelisk-apps/cli-macos-aarch64": "0.2.0",
-    "@obelisk-apps/cli-windows-x86_64": "0.2.0"
+    "@obelisk-apps/cli-linux-x86_64": "0.2.1",
+    "@obelisk-apps/cli-linux-aarch64": "0.2.1",
+    "@obelisk-apps/cli-macos-x86_64": "0.2.1",
+    "@obelisk-apps/cli-macos-aarch64": "0.2.1",
+    "@obelisk-apps/cli-windows-x86_64": "0.2.1"
   }
 }
