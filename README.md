@@ -13,6 +13,12 @@ Past Claude Code, Codex, Kimi Code, Pi, and DeepSeek Harness sessions -- queryab
 
 </div>
 
+> **Copyright notice.** This repository is a derivative of the original
+> [tommy0103/obelisk](https://github.com/tommy0103/obelisk) project. **All
+> copyright and rights in this work belong to tommy0103 and contributors.**
+> It is distributed here under the same AGPL-3.0-only license, with the
+> original copyright notices preserved.
+
 <br />
 
 ## Two sides of the same index
@@ -302,5 +308,10 @@ template mirrors them as per-area checklists.
 ## License
 
 Copyright (C) 2026 tommy0103 and contributors.
+
+This repository is a derivative of the original obelisk project at
+<https://github.com/tommy0103/obelisk>. All copyright and rights in this work
+belong to tommy0103 and contributors, the original authors; this repository
+claims no ownership beyond what AGPL-3.0 grants to recipients of the source.
 
 Obelisk is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-only); see [LICENSE](LICENSE). Derivative works are welcome: if you distribute a modified version, please keep the per-file copyright notices intact and mark your modifications prominently with a date, as AGPL-3.0 §5 requires.
