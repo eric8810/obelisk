@@ -69,6 +69,13 @@ the test you added.
 
 ## Desktop app (GPUI) changes
 
+The behavior spec for the desktop app is
+[docs/desktop-parity.md](docs/desktop-parity.md): a per-feature matrix of the
+original Electron app's behavior, current status, and acceptance criteria.
+**Every desktop PR must update the relevant rows' status in that document**
+(and new features go in before the code does). "It renders" is not parity —
+the acceptance column is the bar.
+
 The app lives in `crates/obelisk-app`. Behavior is verified black-box through
 `tests/e2e-desktop/` (11 scenarios, driver + vision assertions over real
 windows): run `node tests/e2e-desktop/run-desktop.mjs` after a
