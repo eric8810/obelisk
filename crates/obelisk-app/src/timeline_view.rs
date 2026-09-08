@@ -759,6 +759,16 @@ fn tool_call_view(
                                     .child(command.clone()),
                             ),
                     )
+                    // CodeAct exec scripts (parity #17): a multi-line
+                    // command renders as a collapsible Script code block.
+                    .children(if command.contains('\n') {
+                        let script_lines: Vec<String> =
+                            command.split('\n').map(str::to_string).collect();
+                        vec![code_block("Script", &script_lines, script_lines.len() > 12)
+                            .into_any_element()]
+                    } else {
+                        Vec::new()
+                    })
                     .children(if output.is_empty() {
                         Vec::new()
                     } else {

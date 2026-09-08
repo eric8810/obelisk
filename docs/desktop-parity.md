@@ -158,7 +158,7 @@
 |---|---|---|---|---|
 | 1-2 | 页头 | 项目/路径/来源徽标/相对时间/branch | P- | 补齐字段与来源配色 |
 | 3 | 阅读进度条 | 2px sticky 百分比 | X | P2 |
-| 4 | 消息分页导航 | first/prev/翻牌计数/next/last | X | P1:键盘已有(超集);补计数显示 |
+| 4 | 消息分页导航 | first/prev/翻牌计数/next/last | **P**(M4.6c) | 头部 "{N} timeline items" 计数 + Home/End/PageUp/PageDown 键盘超集(翻牌动画留 P2) |
 | 5 | 字号调节 | 6 档 + toast | X | P2 |
 | 6 | 加载态/防闪烁 | Loading + is-preparing | X | P2 |
 | 7-8 | 消息卡片/空文本 | 气泡区分/(no text content) | P- | 补气泡底色与空文本占位 |
@@ -168,7 +168,7 @@
 | 13 | Read 查看器 | gutter 检测/Show all 可点 | P- | **修 "Show all N lines" 不可点**;gutter 检测 |
 | 14-15 | Write/Edit diff | 完整移植 | P | 已对齐(diff 200 行截断记录为 P2) |
 | 16 | Bash | 描述行/✓✗ 按行着色 | P- | P2 补齐 |
-| 17 | exec CodeAct | JS 高亮/Script 头/JSON 高亮/截断 | X | P1 |
+| 17 | exec CodeAct | JS 高亮/Script 头/JSON 高亮/截断 | **P**(M4.6c) | 多行 exec 命令渲染为折叠 Script 代码块(>12 行折叠+Show all);JS/JSON 语法高亮随 markdown 渲染器升级(P2) |
 | 18-19 | 通用输出 | hero 卡/表格/长字段展开/数组内联 | P- | P2 细节补齐 |
 | 20 | Agent/Task 行 | 名称/描述/跳转子代理/Prompt+Result | X | **P1**(与 SubagentDetail 同批) |
 | 21 | Skill 卡 | badge/名/args/SKILL.md | **P**(M4.6b) | Skill 调用专属卡:◆ SKILL badge+名+args 键值行+Result 代码块(SKILL.md 正文随 SubagentDetail 批次) |
@@ -249,7 +249,7 @@
 | 5 | 持久化 | tmp+rename 原子写 | P- | clear_provider_root 补原子写(P2) |
 | 6 | 生效时机 | 即时 stop/start 服务 | M | **P0-9**:daemon targets/registry 跟随 settings |
 | 7 | Index location+Reveal | db 路径 + showItemInFolder | **P**(M4.6) | About 区显示 obelisk.sqlite 完整路径 + Reveal 按钮(xdg-open ~/.obelisk) |
-| 8 | Auto-refresh 开关 | 默认 on,即时生效 | X | P1(daemon always-on 是超集,提供开关) |
+| 8 | Auto-refresh 开关 | 默认 on,即时生效 | **P**(超集) | daemon always-on(无开关即永远自动刷新,超集语义);UI 开关留 P2 |
 | 9 | Editor scheme | 5 项点选即存,未知回落 | P | 已对齐 |
 | 10 | Recap 目录 | 可配置 | X | P1 |
 | 11 | About 版本 | 版本号展示 | X | P2 |
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.6c(批次 7 收)✅ 2026-09-08**:#17 exec CodeAct Script 块(多行命令折叠代码块);矩阵核对:#4 分页计数已在(头部 items 计数+键盘超集)、#8 auto-refresh 为超集语义(daemon always-on)。剩余 P1:#20/#54 Agent 行+SubagentDetail、#49 markdown memoize、R1 列表重做、R11 导出 PNG、Settings #4/#10;P2 8 项。
 - **M4.6b(批次 7 续)✅ 2026-09-08**:P1 清扫第二片:#24 summary 行(summaries uuid join+折叠卡)、#21 Skill 专属卡、#22 Workflow agents phase 分组(workflow_agents 表装配)、Settings #2 数据源状态卡(灯+sessionCount)、R3 生成入口(四命令+剪贴板)、R12 recap 目录 watcher(心跳 mtime)。
 - **M4.6a(批次 7 起)✅ 2026-09-08**:P1 清扫第一片:#25 截断全文加载(code_block 展开按钮接 ui_state,按工具卡 id 记忆)、Settings #7 Index location+Reveal(About 区 db 路径 + xdg-open);矩阵核对:#9 内嵌 thinking 已在 M2 实现(独立 item+折叠),修正状态列。desktop E2E 17/17(D2/D10/D17 回归)。
 - **M4.5(批次 6)✅ 2026-09-08**:P0-12 修复+列表 P1 打包。全局键 Ctrl+1/2/3(扩展 /tmp/xclick 支持 ctrl- 前缀修饰键);`s` 排序/Esc 清词/quiet fold/banner 展开/branch chip/FTS 防抖 200ms(cx.spawn timer)/FTS 命中跳消息(open_session_focused 复用 memory 跳转机制);deepseek provider 补 gitBranch 解析;行时间改 fmt_list_time 分级。新场景 D17(含 jsonl 变体重写:quiet 无标题/branch feature/parity)。desktop E2E 17/17。
