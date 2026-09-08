@@ -35,8 +35,8 @@
 | P0-3 | Memory | **✅ 已修复(M4.2)**:archive/restore 走 writer lease 写 memories.deleted_at/reason;行 Archive/Restore 按钮 + D 键 + 批量(x 勾选+D)三入口;5s undo(u 键已验证;undo 条视觉受 fc-gpui focus 切换丢帧上游 bug 影响暂免视觉断言,功能由 DB 往返证明) | D13:DB 归档/恢复往返 |
 | P0-4 | Memory | **✅ 已修复(M4.2)**:memory_tab 状态;侧栏子行互斥高亮+点击切换;header Active/Archived chips 可点击切换;列表按 tab 过滤 | D13/D5:tab 高亮+列表内容断言 |
 | P0-5 | Memory | **✅ 已修复(M4.2)**:详情 View conversation 按钮 + v 键(键位超集);跳转后定位 message_start 并紫框高亮 2s;open_session_focused 修跨视图进入 | D13:跳转+高亮断言 |
-| P0-6 | Activity | 热图、活动账本(三分类/噪音过滤/跳转)整体缺失——原版 Activity 页下半区主体 | 371 格热图可点击选中切日账本;账本三分类分组渲染,行可跳转会话 |
-| P0-7 | Recap | 详情为 JSON 原文直出;五张卡牌(Cover/Path/Vibe/Workflow/Closing)与 archetype 主题未渲染 | 选定周报渲染五卡,键盘 ←/→ 翻页,archetype 调色板生效 |
+| P0-6 | Activity | **✅ 已修复(M4.4)**:371 格热图(53 周×7 天周日对齐,level 0-4 = ceil(tokens/max×4),5 档紫梯度,月标签+Less/More 图例,点击选中白边框切日账本);Daily/Weekly/Cumulative 三 tab(周条形图+fc-ui AreaChart 累计);5 格统计条(Lifetime/Peak/Longest task/双 streak);账本三分类 new-workspace/new-session/continued(区间交集筛选+同 project 更早会话判定)+噪音折叠(无标题或 label 匹配 od-conn-test/6 位 hex 前缀)+行点击跳会话;Show more 逐月展开 | D15:统计条/tabs/热图/日账本;activity_tests 5 单测 |
+| P0-7 | Recap | **✅ 已修复(M4.4)**:Recap 页左列表+右侧五卡舞台(Cover/Path/Vibe/Workflow/Closing 按原版逐卡复刻:eyebrow+编号 02·05、archetype 7 调色板 tc/tc2/glow/mid/soft 全进 theme、Cover activity 7 日条形、Path 时间轴节点+outcome 胶囊、Vibe meter+quote、Workflow verdict 左条、Closing 大字+receipts);底部 nav ←/→ 圆钮+5 标签 dot,禁用态灰;选 recap 重置到 Cover+persona archetype 驱动配色 | D16:五卡 sentinel 断言+翻页导航 |
 | P0-8 | Settings | **✅ 已修复(M4.3)**:About 区显示版本号 + Rebuild index 按钮(ACCENT 描边);request_rebuild 走 writer lease 全量重建,writer_busy 时状态行提示 deferred,成功 "Rebuilt index — N sessions" 并 reload | D14:__last_build__ 刷新断言 |
 | P0-9 | Settings | **✅ 已修复(M4.3)**:validate_provider_root 单测覆盖(相对路径/不存在目录拒收,存在目录与 ~ 展开);daemon 每次心跳检查 settings.json mtime,变化即从当前 settings 重建 AdaptiveWatcher 并全量 rescan;run_build 每次从当前 settings 重建 registry(root 切换不重启生效) | D14:settings.json root 往复热切换(A↔B)后 index_state 路径翻转断言;Rust 单测 8 项 |
 | P0-10 | 骨架 | **✅ 已修复(M4.0)**:启动探测 StatusNotifierWatcher(busctl/gdbus);无 tray 桌面关窗即退(LastWindowClosed),有 tray 保持常驻(Explicit,本机 Hyprland 实测 true,D8 不变) | 探测代码路径已验证;GNOME 实机复测待做 |
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.4(批次 5)✅ 2026-09-08**:P0-6/7 修复。Activity 页整体重写(热图/三 tab/统计条/账本三分类/噪音折叠/月展开);Recap 从 JSON 直出改五卡舞台(archetype 调色板入 theme,卡导航 dot/箭头)。数据层新增 load_activity_sessions/heatmap_grid/streaks/day_ledger/month_ledger + 5 单测;修复 Recap 大字 line_height(px(1.1)) 绝对行高导致字形重叠的 bug;E2E D16 导航用像素扫描定位紫箭头(vision 全图坐标漂移 ~200px 不可靠)。新场景 D15/D16;desktop E2E 16/16。
 - **M4.3(批次 4)✅ 2026-09-08**:P0-8/9 修复。daemon 热跟随(settings mtime 心跳检测 → watcher 重建 + rescan;registry 每次 build 从当前 settings 重建)、validate_provider_root 前置校验、About 版本号 + Rebuild index 按钮(状态行 DANGER 红/ACCENT_2 分色)。新场景 D14(热切换往复 + 手动重建);修复 driver 滚轮注入(xclick scroll 语义为正=上,补 scrollAt);D14 点击换算改用窗口实际尺寸(无 WM 时窗口全屏 2522x1520,非假设的 1250x749)。desktop E2E 14/14。
 - **M4.2(批次 3)✅ 2026-09-08**:P0-3/4/5/13 修复 + 顺手 P1(anchors 展示、消息范围、memory 搜索、排序切换、tab chips 可点、时间格式化 fmt_list_time/fmt_relative)。附带修复三个深层 bug:render() 中调用 window.focus() 导致 fc-gpui 丢帧(所有"点击看似无效"的总根源)、sidebar mt_auto 吞掉 Settings 行、memory-list 缺 flex_1 使滚动容器 hitbox 塌缩。新场景 D13;desktop E2E 13/13。键位超集记录:m=打开详情、v=溯源跳转(Enter 被 X11 平台层吃)。
 

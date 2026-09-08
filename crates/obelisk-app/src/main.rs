@@ -121,6 +121,10 @@ struct ObeliskApp {
     recaps: Option<std::rc::Rc<Vec<String>>>,
     selected_recap: Option<serde_json::Value>,
     selected_recap_name: Option<String>,
+    /// Visible recap card (0=Cover … 4=Closing) + active archetype key
+    /// (Vue RecapDetail state; M4.4).
+    recap_card_ix: usize,
+    recap_archetype: String,
     /// Settings-page snapshot, loaded on demand.
     settings: Option<crate::data::SettingsSnapshot>,
     /// Transient settings-page status line (root save result).
@@ -138,6 +142,11 @@ struct ObeliskApp {
     /// Memory search box + focus target for the keyboard layer.
     memory_search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
     memory_focus: gpui::FocusHandle,
+    /// Activity chart tab + heatmap day selection + month pagination
+    /// (Vue Activity state; M4.4).
+    activity_tab: crate::views::ActivityTab,
+    activity_day: Option<String>,
+    activity_months: usize,
     /// Session-list search box state (Vue: `/` focuses, filters by
     /// title/project/branch client-side). Observed → `search_query`.
     search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
@@ -261,11 +270,16 @@ impl ObeliskApp {
             recaps: None,
             selected_recap: None,
             selected_recap_name: None,
+            recap_card_ix: 0,
+            recap_archetype: "architect".to_string(),
             settings: None,
             settings_status: None,
             reader_states: Vec::new(),
             search_state,
             search_query: String::new(),
+            activity_tab: crate::views::ActivityTab::Daily,
+            activity_day: None,
+            activity_months: 1,
             search_hits: Vec::new(),
             sessions_focus,
             _search_subscription: subscription,
@@ -301,6 +315,11 @@ impl ObeliskApp {
             crate::views::AppView::Activity => {
                 self.usage = Some(crate::data::load_usage_stats(&self.home));
                 self.overview = Some(crate::data::load_stats(&self.home));
+                // Entering the view resets chart state (Vue onMounted: one
+                // month block, no day selected).
+                self.activity_day = None;
+                self.activity_tab = crate::views::ActivityTab::Daily;
+                self.activity_months = 1;
             }
             crate::views::AppView::Recap => {
                 self.recaps = Some(std::rc::Rc::new(crate::data::list_recaps(&self.home)));
@@ -331,6 +350,20 @@ impl ObeliskApp {
 
     /// Select one recap file (shows its parsed JSON below the list).
     fn select_recap(&mut self, ix: usize, _window: &mut Window, cx: &mut Context<Self>) {
+        // Reset the card stage for the newly selected recap (Vue behavior:
+        // Cover first, persona archetype drives the palette).
+        self.recap_card_ix = 0;
+        self.recap_archetype = self
+            .selected_recap
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .get("persona")
+                    .and_then(|p| p.get("archetype"))
+                    .and_then(|a| a.as_str())
+            })
+            .unwrap_or("architect")
+            .to_string();
         let filename = self
             .recaps
             .as_ref()
@@ -938,19 +971,81 @@ impl gpui::Render for ObeliskApp {
                     }
                     .into_any_element()
                 }
-                crate::views::AppView::Activity => crate::views::ActivityView {
-                    stats: self.usage.clone().unwrap_or_default(),
-                    overview: self.overview.clone().unwrap_or_default(),
+                crate::views::AppView::Activity => {
+                    let app_handle = cx.entity();
+                    let stats = self.usage.clone().unwrap_or_default();
+                    let overview = self.overview.clone().unwrap_or_default();
+                    let sessions =
+                        std::rc::Rc::new(crate::data::load_activity_sessions(&self.home));
+                    let selected_day = self.activity_day.clone();
+                    let tab = self.activity_tab;
+                    let loaded_months = self.activity_months;
+                    let day_handle = cx.entity();
+                    crate::views::ActivityView {
+                        stats,
+                        overview,
+                        sessions,
+                        selected_day,
+                        tab,
+                        loaded_months,
+                        on_select_day: std::rc::Rc::new(move |day, _window, cx| {
+                            day_handle.update(cx, |app, cx| {
+                                app.activity_day = Some(day);
+                                cx.notify();
+                            });
+                        }),
+                        on_open_session: std::rc::Rc::new(move |session_id, _window, cx| {
+                            app_handle.update(cx, |app, cx| {
+                                let home = app.home.clone();
+                                app.open_session_focused(
+                                    session_id,
+                                    String::new(),
+                                    home,
+                                    _window,
+                                    cx,
+                                );
+                            });
+                        }),
+                        on_tab: {
+                            let tab_handle = cx.entity();
+                            std::rc::Rc::new(move |tab, _window, cx| {
+                                tab_handle.update(cx, |app, cx| {
+                                    app.activity_tab = tab;
+                                    cx.notify();
+                                });
+                            })
+                        },
+                        on_more: {
+                            let more_handle = cx.entity();
+                            std::rc::Rc::new(move |_window, cx| {
+                                more_handle.update(cx, |app, cx| {
+                                    app.activity_months += 1;
+                                    cx.notify();
+                                });
+                            })
+                        },
+                    }
+                    .into_any_element()
                 }
-                .into_any_element(),
                 crate::views::AppView::Recap => {
                     let app_handle = cx.entity();
+                    let card_handle = cx.entity();
+                    let archetype = self.recap_archetype.clone();
+                    let card_ix = self.recap_card_ix;
                     crate::views::RecapView {
                         filenames: self.recaps.clone().unwrap_or_default(),
                         selected: self.selected_recap.clone(),
                         selected_name: self.selected_recap_name.clone(),
+                        card_ix,
+                        archetype,
                         on_select: std::rc::Rc::new(move |ix, window, cx| {
                             app_handle.update(cx, |app, cx| app.select_recap(ix, window, cx));
+                        }),
+                        on_card: std::rc::Rc::new(move |ix, _window, cx| {
+                            card_handle.update(cx, |app, cx| {
+                                app.recap_card_ix = ix.min(4);
+                                cx.notify();
+                            });
                         }),
                     }
                     .into_any_element()

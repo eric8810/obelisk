@@ -112,6 +112,115 @@ pub const SANS: &str = ".SystemUIFont";
 /// `--font-mono`).
 pub const MONO: &str = ".SystemMono";
 
+// ---- Activity heatmap (Vue .heatmap-cell level-0..4) ------------------------
+
+/// level-0: `--surface-strong`
+pub const HEAT_L0: Rgba = rgba(0xffffff0f);
+/// level-1: rgba(99, 102, 241, 0.3)
+pub const HEAT_L1: Rgba = rgba(0x6366f14d);
+/// level-2: rgba(99, 102, 241, 0.5)
+pub const HEAT_L2: Rgba = rgba(0x6366f180);
+/// level-3: rgba(139, 92, 246, 0.7)
+pub const HEAT_L3: Rgba = rgba(0x8b5cf6b3);
+/// level-4: rgba(168, 85, 247, 0.9)
+pub const HEAT_L4: Rgba = rgba(0xa855f7e6);
+
+pub const HEAT_LEVELS: [Rgba; 5] = [HEAT_L0, HEAT_L1, HEAT_L2, HEAT_L3, HEAT_L4];
+
+// ---- Recap archetype palettes (Vue src/archetypes.js PALETTES) --------------
+
+pub struct ArchetypePalette {
+    pub key: &'static str,
+    pub name: &'static str,
+    /// `tc` — primary text/border color.
+    pub tc: Rgba,
+    /// `tc2` — light variant (secondary text).
+    pub tc2: Rgba,
+    /// `glow` — strong wash (headers, focus rings).
+    pub glow: Rgba,
+    /// `mid` — medium wash (card backgrounds).
+    pub mid: Rgba,
+    /// `soft` — faint wash (hover, dividers).
+    pub soft: Rgba,
+}
+
+/// Vue rgba(...,0.40) glow / 0.22 mid / 0.10 soft alphas.
+pub const ARCHETYPES: [ArchetypePalette; 7] = [
+    ArchetypePalette {
+        key: "architect",
+        name: "The Architect",
+        tc: rgba(0xa78bfaff),
+        tc2: rgba(0xc4b5fdff),
+        glow: rgba(0xa78bfa66),
+        mid: rgba(0xa78bfa38),
+        soft: rgba(0xa78bfa1a),
+    },
+    ArchetypePalette {
+        key: "debugger",
+        name: "The Debugger",
+        tc: rgba(0xfbbf24ff),
+        tc2: rgba(0xfde68aff),
+        glow: rgba(0xfbbf2466),
+        mid: rgba(0xfbbf2438),
+        soft: rgba(0xfbbf241a),
+    },
+    ArchetypePalette {
+        key: "shipper",
+        name: "The Shipper",
+        tc: rgba(0xf472b6ff),
+        tc2: rgba(0xfda4afff),
+        glow: rgba(0xf472b666),
+        mid: rgba(0xf472b638),
+        soft: rgba(0xf472b61a),
+    },
+    ArchetypePalette {
+        key: "curator",
+        name: "The Curator",
+        tc: rgba(0x67e8f9ff),
+        tc2: rgba(0xa5f3fcff),
+        glow: rgba(0x67e8f966),
+        mid: rgba(0x67e8f938),
+        soft: rgba(0x67e8f91a),
+    },
+    ArchetypePalette {
+        key: "director",
+        name: "The Director",
+        tc: rgba(0xfcd34dff),
+        tc2: rgba(0xfde68aff),
+        glow: rgba(0xfcd34d66),
+        mid: rgba(0xfcd34d38),
+        soft: rgba(0xfcd34d1a),
+    },
+    ArchetypePalette {
+        key: "cartographer",
+        name: "The Cartographer",
+        tc: rgba(0x34d399ff),
+        tc2: rgba(0x6ee7b7ff),
+        glow: rgba(0x34d39966),
+        mid: rgba(0x34d39938),
+        soft: rgba(0x34d3991a),
+    },
+    ArchetypePalette {
+        key: "wanderer",
+        name: "The Wanderer",
+        tc: rgba(0x64748bff),
+        tc2: rgba(0x94a3b8ff),
+        glow: rgba(0x64748b73),
+        mid: rgba(0x64748b40),
+        soft: rgba(0x64748b1f),
+    },
+];
+
+/// Look up a palette by archetype key (case-insensitive; falls back to
+/// wanderer, matching the Vue default).
+pub fn archetype(key: &str) -> &'static ArchetypePalette {
+    let key = key.trim().to_ascii_lowercase();
+    ARCHETYPES
+        .iter()
+        .find(|p| p.key == key)
+        .unwrap_or(&ARCHETYPES[6])
+}
+
 // ---- metrics ---------------------------------------------------------------
 
 /// Sidebar column width (`--col-sidebar`).

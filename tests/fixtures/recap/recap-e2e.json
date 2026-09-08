@@ -1,0 +1,54 @@
+{
+  "persona": {
+    "archetype": "architect",
+    "title": "The Architect",
+    "claim": "Systems over noise"
+  },
+  "period": {
+    "label": "W37",
+    "start": "2026-09-07"
+  },
+  "metrics": {
+    "sessions": 5,
+    "tokens": 12000
+  },
+  "cards": [
+    {
+      "badge": "WEEKLY RECAP",
+      "title": "Cover Sentinel Alpha",
+      "claim": "A week of careful building",
+      "activity": [0.1, 0.5, 0.8, 0.3, 0.9, 0.2, 0.6],
+      "footer": "5 sessions · 12K tokens"
+    },
+    {
+      "title": "Path Sentinel Beta",
+      "items": [
+        { "day": "Mon", "prompt": "Ship the parser fix", "turn": "done" },
+        { "day": "Wed", "prompt": "Rebuild the watcher", "turn": "merged" }
+      ]
+    },
+    {
+      "title": "Vibe Sentinel Gamma",
+      "voice_lines": [
+        { "text": "Steady and focused", "count": 9, "label": "tone", "time": "morning" }
+      ],
+      "meter": { "value": 0.7, "label": "focus", "caption": "deep work" },
+      "quote": { "text": "Make it so.", "caption": "most repeated" }
+    },
+    {
+      "title": "Workflow Sentinel Delta",
+      "deck": "Three flows ran this week.",
+      "stats": "3 workflows · 42 turns",
+      "items": [
+        { "name": "parity-sweep", "reaction": "clean run, no drift" }
+      ],
+      "verdict": "Verdict Sentinel Echo"
+    },
+    {
+      "headline": "Carved Sentinel Zeta",
+      "receipts": ["5 sessions", "12K tokens", "2 projects"],
+      "most_said_phrase": "make it so",
+      "signoff": "until next week"
+    }
+  ]
+}

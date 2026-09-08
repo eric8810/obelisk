@@ -5,6 +5,7 @@
 //! directly (no IPC) and reads the shared index; write ownership stays with
 //! the resident Rust daemon (ADR-0013 Stage 3).
 
+use chrono::Datelike;
 use std::path::Path;
 
 use obelisk_core::db;
@@ -254,7 +255,11 @@ pub struct LongestTurn {
     /// Message identity, kept for the jump-to-message link (polish pass).
     #[allow(dead_code)]
     pub uuid: String,
+    /// Kept for the future jump-to-message link.
+    #[allow(dead_code)]
     pub session_id: String,
+    /// Kept for the future jump-to-message link.
+    #[allow(dead_code)]
     pub timestamp: String,
 }
 
@@ -323,6 +328,430 @@ pub fn load_usage_stats(home: &Path) -> UsageStats {
         }
     }
     stats
+}
+
+// ---- Activity ledger + heatmap (Vue Activity.vue parity) --------------------
+
+/// One bare session row for the activity ledger (query output).
+#[derive(Debug, Clone, Default)]
+pub struct ActivitySession {
+    pub id: String,
+    pub title: String,
+    pub project: String,
+    /// Project display label (shortest project_path basename, or the slug).
+    pub label: String,
+    pub source: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub message_count: i64,
+}
+
+/// Ledger kind (Vue `kind` classification).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerKind {
+    NewWorkspace,
+    NewSession,
+    Continued,
+}
+
+/// Noise vs normal split (Vue `splitNoise`).
+#[derive(Debug, Clone, Default)]
+pub struct NoiseSplit {
+    pub normal: Vec<ActivitySession>,
+    pub noise: Vec<ActivitySession>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LedgerBlock {
+    /// "September 2026".
+    pub header: String,
+    /// "SEP 8" event chip label (day blocks only; empty for months).
+    pub event_date: String,
+    pub session_total: usize,
+    pub new_workspaces: NoiseSplit,
+    pub new_sessions: NoiseSplit,
+    pub continued: NoiseSplit,
+    pub is_empty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityCell {
+    pub day: String,
+    /// Daily token count — kept for tooltips and evidence assertions.
+    #[allow(dead_code)]
+    pub tokens: i64,
+    pub level: u8,
+    pub col: usize,
+    pub row: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ActivityHeatmap {
+    pub cells: Vec<ActivityCell>,
+    /// (col, label) month marks on the top row.
+    pub month_labels: Vec<(usize, &'static str)>,
+    pub cols: usize,
+}
+
+const MONTHS_SHORT: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+const MONTHS_FULL: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Vue `NOISE_PROJECT_RE = /^(od-conn-test|[0-9a-f]{6,})/i` plus the
+/// untitled rule (`!s.title`).
+pub fn is_noise_session(title: &str, label: &str) -> bool {
+    if title.is_empty() {
+        return true;
+    }
+    let lower = label.to_ascii_lowercase();
+    if lower.starts_with("od-conn-test") {
+        return true;
+    }
+    // [0-9a-f]{6,} at the start of the label.
+    let hex_prefix = lower.chars().take_while(|c| c.is_ascii_hexdigit()).count();
+    hex_prefix >= 6
+}
+
+pub fn split_noise(sessions: Vec<ActivitySession>) -> NoiseSplit {
+    let mut split = NoiseSplit::default();
+    for session in sessions {
+        if is_noise_session(&session.title, &session.label) {
+            split.noise.push(session);
+        } else {
+            split.normal.push(session);
+        }
+    }
+    split.total = split.normal.len() + split.noise.len();
+    split
+}
+
+/// All sessions ordered by start time — the ledger's raw material. Source
+/// labels come from the jsonl_path provider prefix (provider id before the
+/// first `/`), falling back to "claude" like the Vue side.
+pub fn load_activity_sessions(home: &Path) -> Vec<ActivitySession> {
+    let Ok(conn) = db::open_read_db(home) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, COALESCE(title, ''), COALESCE(project, ''), COALESCE(started_at, ''),          COALESCE(ended_at, ''), COALESCE(message_count, 0), COALESCE(jsonl_path, '')          FROM sessions ORDER BY started_at",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok(ActivitySession {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            project: row.get(2)?,
+            label: String::new(),
+            source: String::new(),
+            started_at: row.get(3)?,
+            ended_at: row.get(4)?,
+            message_count: row.get(5)?,
+        })
+    });
+    let mut sessions: Vec<ActivitySession> = match rows {
+        Ok(rows) => rows.flatten().collect(),
+        Err(_) => return Vec::new(),
+    };
+    // Project label: shortest project_path basename per slug (Vue
+    // formatProjectLabel), else the slug minus a leading dash.
+    let mut labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT project, project_path FROM sessions          WHERE project IS NOT NULL AND project_path IS NOT NULL",
+    ) {
+        let rows = match stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        }) {
+            Ok(rows) => rows,
+            Err(_) => return Vec::new(),
+        };
+        for row in rows {
+            let (slug, path) = match row {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if path.is_empty() {
+                continue;
+            }
+            match labels.get_mut(&slug) {
+                Some(existing) if existing.len() <= path.len() => {}
+                _ => {
+                    labels.insert(slug, path);
+                }
+            }
+        }
+    }
+    for session in &mut sessions {
+        let slug = session.project.clone();
+        let label = match labels.get(&slug) {
+            Some(path) => path.rsplit('/').next().unwrap_or(path).to_string(),
+            None => slug.trim_start_matches('-').to_string(),
+        };
+        session.label = label;
+    }
+    // jsonl_path is not in the row above; re-derive source per session via a
+    // second pass keyed on id (kept simple: one extra query).
+    if let Ok(mut stmt) = conn.prepare("SELECT id, jsonl_path FROM sessions") {
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        }) else {
+            return sessions;
+        };
+        let mut sources: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let Ok((id, path)) = row else {
+                continue;
+            };
+            let source = path
+                .split('/')
+                .find(|part| !part.is_empty())
+                .unwrap_or("claude")
+                .to_string();
+            sources.insert(id, source);
+        }
+        for session in &mut sessions {
+            session.source = sources
+                .get(&session.id)
+                .cloned()
+                .unwrap_or_else(|| "claude".to_string());
+        }
+    }
+    sessions
+}
+
+/// Vue `heatmapGrid`: 53-week grid starting at the Sunday on/after
+/// (today - 364 days); levels 0..4 = ceil(tokens/max*4) capped at 4.
+/// Day keys are LOCAL dates (the Vue toISOString quirk shifts a day in
+/// UTC+8; we intentionally use local formatting so keys match the SQL
+/// DATE(timestamp) output).
+pub fn heatmap_grid(daily: &[UsageDay], today: chrono::NaiveDate) -> ActivityHeatmap {
+    let mut map = std::collections::HashMap::new();
+    for day in daily {
+        map.insert(day.day.clone(), day.tokens);
+    }
+    let max_tokens = daily
+        .iter()
+        .map(|d| d.tokens)
+        .filter(|t| *t > 0)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let start_base = today - chrono::Duration::days(364);
+    // JS getDay(): 0=Sunday. chrono: num_days_from_sunday().
+    // %u: 1=Monday..7=Sunday → JS getDay (0=Sunday).
+    let js_day = (start_base
+        .format("%u")
+        .to_string()
+        .parse::<u32>()
+        .unwrap_or(1))
+        % 7;
+    let days_until_sunday = (7 - js_day) % 7;
+    let start = start_base + chrono::Duration::days(days_until_sunday as i64);
+
+    let mut cells = Vec::new();
+    let mut month_labels = Vec::new();
+    let mut last_month: Option<u32> = None;
+    let mut i: usize = 0;
+    loop {
+        let date = start + chrono::Duration::days(i as i64);
+        if date > today {
+            break;
+        }
+        let key = date.format("%Y-%m-%d").to_string();
+        let tokens = map.get(&key).copied().unwrap_or(0);
+        let level = if tokens == 0 {
+            0
+        } else {
+            (((tokens as f64 / max_tokens as f64) * 4.0).ceil() as u8).min(4)
+        };
+        let col = i / 7;
+        let row = i % 7;
+        let month = date.month();
+        if row == 0 && last_month != Some(month) {
+            month_labels.push((col, MONTHS_SHORT[(month - 1) as usize]));
+            last_month = Some(month);
+        }
+        cells.push(ActivityCell {
+            day: key,
+            tokens,
+            level,
+            col,
+            row,
+        });
+        i += 1;
+        if i >= 371 {
+            break;
+        }
+    }
+    let cols = cells.last().map(|c| c.col + 1).unwrap_or(0);
+    ActivityHeatmap {
+        cells,
+        month_labels,
+        cols,
+    }
+}
+
+/// Vue currentStreak/longestStreak.
+pub fn streaks(daily: &[UsageDay], today: chrono::NaiveDate) -> (u32, u32) {
+    let map: std::collections::HashMap<&str, i64> =
+        daily.iter().map(|d| (d.day.as_str(), d.tokens)).collect();
+    let mut current = 0u32;
+    let mut started = false;
+    for i in 0..=365 {
+        let key = (today - chrono::Duration::days(i))
+            .format("%Y-%m-%d")
+            .to_string();
+        if map.get(key.as_str()).is_some_and(|t| *t > 0) {
+            started = true;
+            current += 1;
+        } else if started {
+            break;
+        }
+    }
+    let mut days: Vec<&str> = daily
+        .iter()
+        .filter(|d| d.tokens > 0)
+        .map(|d| d.day.as_str())
+        .collect();
+    days.sort_unstable();
+    let mut longest = 0u32;
+    let mut streak = 0u32;
+    let mut prev: Option<chrono::NaiveDate> = None;
+    for day in days {
+        let date = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok();
+        streak = match (date, prev) {
+            (Some(d), Some(p)) if (d - p).num_days() == 1 => streak + 1,
+            _ => 1,
+        };
+        prev = date;
+        longest = longest.max(streak);
+    }
+    (current, longest)
+}
+
+/// Classify + split sessions into a ledger block for a date range.
+/// Sessions overlap the range if started_at <= end 23:59:59 and
+/// (ended_at || started_at) >= start 00:00:00 (Vue daySessions filter).
+fn ledger_block_for(
+    sessions: &[ActivitySession],
+    range_start: &str,
+    range_end: &str,
+    header: String,
+    event_date: String,
+) -> LedgerBlock {
+    let day_start = format!("{range_start}T00:00:00");
+    let day_end = format!("{range_end}T23:59:59");
+    let mut new_workspaces = Vec::new();
+    let mut new_sessions = Vec::new();
+    let mut continued = Vec::new();
+    for session in sessions {
+        if session.started_at.is_empty() {
+            continue;
+        }
+        let end = if session.ended_at.is_empty() {
+            session.started_at.clone()
+        } else {
+            session.ended_at.clone()
+        };
+        if session.started_at > day_end || end < day_start {
+            continue;
+        }
+        let started_in_range = session.started_at >= day_start && session.started_at <= day_end;
+        let kind = if started_in_range {
+            let has_earlier = sessions.iter().any(|other| {
+                other.project == session.project
+                    && other.id != session.id
+                    && other.started_at < session.started_at
+            });
+            if has_earlier {
+                LedgerKind::NewSession
+            } else {
+                LedgerKind::NewWorkspace
+            }
+        } else {
+            LedgerKind::Continued
+        };
+        match kind {
+            LedgerKind::NewWorkspace => new_workspaces.push(session.clone()),
+            LedgerKind::NewSession => new_sessions.push(session.clone()),
+            LedgerKind::Continued => continued.push(session.clone()),
+        }
+    }
+    let session_total = new_workspaces.len() + new_sessions.len() + continued.len();
+    LedgerBlock {
+        header,
+        event_date,
+        session_total,
+        new_workspaces: split_noise(new_workspaces),
+        new_sessions: split_noise(new_sessions),
+        continued: split_noise(continued),
+        is_empty: session_total == 0,
+    }
+}
+
+/// Day ledger (Vue daySessions): selects one day for the heatmap click.
+pub fn day_ledger(sessions: &[ActivitySession], date_key: &str) -> LedgerBlock {
+    let month = date_key
+        .get(5..7)
+        .and_then(|m| m.parse::<usize>().ok())
+        .unwrap_or(1);
+    let year = date_key.get(0..4).unwrap_or_default();
+    let header = format!("{} {}", MONTHS_FULL[(month - 1).min(11)], year);
+    let day = date_key
+        .get(8..10)
+        .and_then(|d| d.parse::<u32>().ok())
+        .unwrap_or(1);
+    let event_date = format!(
+        "{} {}",
+        MONTHS_SHORT[(month - 1).min(11)].to_uppercase(),
+        day
+    );
+    ledger_block_for(sessions, date_key, date_key, header, event_date)
+}
+
+/// Month ledger (Vue buildMonthBlock).
+pub fn month_ledger(sessions: &[ActivitySession], year: i32, month0: u32) -> LedgerBlock {
+    let month = month0 + 1;
+    let range_start = format!("{year:04}-{month:02}-01");
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let range_end_last = chrono::NaiveDate::from_ymd_opt(ny, nm, 1)
+        .map(|d| d - chrono::Duration::days(1))
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| range_start.clone());
+    let header = format!("{} {}", MONTHS_FULL[(month - 1) as usize % 12], year);
+    ledger_block_for(
+        sessions,
+        &range_start,
+        &range_end_last,
+        header,
+        String::new(),
+    )
 }
 
 // ---- Overview stats (Vue db:getStats parity) ----
@@ -867,5 +1296,159 @@ mod tests {
         assert!(validate_provider_root(home, "/tmp").is_ok());
         let err = validate_provider_root(home, "/definitely/not/a/dir");
         assert!(err.is_err());
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn day(key: &str, tokens: i64) -> UsageDay {
+        UsageDay {
+            day: key.to_string(),
+            tokens,
+        }
+    }
+
+    #[test]
+    fn noise_sessions_match_vue_rules() {
+        // Untitled is always noise.
+        assert!(is_noise_session("", "anything"));
+        // od-conn-test prefix.
+        assert!(is_noise_session("titled", "od-conn-test-1"));
+        // 6+ leading hex digits.
+        assert!(is_noise_session("titled", "abcdef"));
+        assert!(is_noise_session("titled", "a1b2c3foo"));
+        // Short hex or non-hex labels stay normal.
+        assert!(!is_noise_session("titled", "abcde"));
+        assert!(!is_noise_session("titled", "zzzzzz"));
+        // Uppercase hex counts (the Vue regex is case-insensitive).
+        assert!(is_noise_session("titled", "ABCDEF"));
+    }
+
+    #[test]
+    fn heatmap_grid_levels_and_bounds() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 8).unwrap();
+        let daily = vec![
+            day("2026-09-08", 400), // today: max -> level 4
+            day("2026-09-07", 100), // ceil(100/400*4)=1
+            day("2026-09-06", 200), // ceil(2)=2
+            day("2026-09-05", 0),   // level 0
+        ];
+        let grid = heatmap_grid(&daily, today);
+        assert!(!grid.cells.is_empty());
+        assert!(grid.cells.len() <= 371);
+        let today_cell = grid.cells.iter().find(|c| c.day == "2026-09-08").unwrap();
+        assert_eq!(today_cell.level, 4);
+        let d7 = grid.cells.iter().find(|c| c.day == "2026-09-07").unwrap();
+        assert_eq!(d7.level, 1);
+        let d6 = grid.cells.iter().find(|c| c.day == "2026-09-06").unwrap();
+        assert_eq!(d6.level, 2);
+        let d5 = grid.cells.iter().find(|c| c.day == "2026-09-05").unwrap();
+        assert_eq!(d5.level, 0);
+        // The grid starts on a Sunday (row 0, col 0).
+        assert_eq!(grid.cells[0].row, 0);
+        assert_eq!(grid.cells[0].col, 0);
+    }
+
+    #[test]
+    fn streaks_match_vue_semantics() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 8).unwrap();
+        // Current: 3-day run ending today; longest includes a 4-day run.
+        let daily = vec![
+            day("2026-09-08", 10),
+            day("2026-09-07", 10),
+            day("2026-09-06", 10),
+            day("2026-06-01", 10),
+            day("2026-06-02", 10),
+            day("2026-06-03", 10),
+            day("2026-06-04", 10),
+        ];
+        let (current, longest) = streaks(&daily, today);
+        assert_eq!(current, 3);
+        assert_eq!(longest, 4);
+    }
+
+    #[test]
+    fn day_ledger_classifies_and_splits_noise() {
+        let sessions = vec![
+            ActivitySession {
+                id: "first".into(),
+                title: "First workspace".into(),
+                project: "proj-a".into(),
+                label: "proj-a".into(),
+                source: "deepseek".into(),
+                started_at: "2026-09-07T10:00:00".into(),
+                ended_at: "2026-09-07T11:00:00".into(),
+                message_count: 5,
+            },
+            ActivitySession {
+                id: "second".into(),
+                title: "Second in same workspace".into(),
+                project: "proj-a".into(),
+                label: "proj-a".into(),
+                source: "deepseek".into(),
+                started_at: "2026-09-07T12:00:00".into(),
+                ended_at: String::new(),
+                message_count: 3,
+            },
+            ActivitySession {
+                id: "carried".into(),
+                title: "Carried over".into(),
+                project: "proj-b".into(),
+                label: "proj-b".into(),
+                source: "deepseek".into(),
+                started_at: "2026-09-06T23:00:00".into(),
+                ended_at: "2026-09-07T09:30:00".into(),
+                message_count: 7,
+            },
+            ActivitySession {
+                id: "throwaway".into(),
+                title: String::new(),
+                project: "hex123456".into(),
+                label: "abcdef12".into(),
+                source: "deepseek".into(),
+                started_at: "2026-09-07T09:00:00".into(),
+                ended_at: String::new(),
+                message_count: 1,
+            },
+        ];
+        let block = day_ledger(&sessions, "2026-09-07");
+        assert_eq!(block.session_total, 4);
+        // first: started that day, no earlier proj-a session -> workspace.
+        assert_eq!(block.new_workspaces.normal.len(), 1);
+        assert_eq!(block.new_workspaces.normal[0].id, "first");
+        // second: earlier proj-a session exists -> new-session.
+        assert_eq!(block.new_sessions.normal.len(), 1);
+        assert_eq!(block.new_sessions.normal[0].id, "second");
+        // carried: started before the day -> continued.
+        assert_eq!(block.continued.normal.len(), 1);
+        assert_eq!(block.continued.normal[0].id, "carried");
+        // throwaway: untitled -> noise, still counted in its group.
+        assert_eq!(block.new_workspaces.noise.len(), 1);
+        assert_eq!(block.new_workspaces.total, 2);
+        // Header formats.
+        assert_eq!(block.header, "September 2026");
+        assert_eq!(block.event_date, "SEP 7");
+    }
+
+    #[test]
+    fn month_ledger_range_is_calendar_month() {
+        let sessions = vec![ActivitySession {
+            id: "s".into(),
+            title: "t".into(),
+            project: "p".into(),
+            label: "p".into(),
+            source: "deepseek".into(),
+            started_at: "2026-08-15T10:00:00".into(),
+            ended_at: String::new(),
+            message_count: 1,
+        }];
+        let block = month_ledger(&sessions, 2026, 7); // August (month0=7)
+        assert_eq!(block.header, "August 2026");
+        assert_eq!(block.session_total, 1);
+        let off = month_ledger(&sessions, 2026, 8); // September: empty
+        assert!(off.is_empty);
     }
 }

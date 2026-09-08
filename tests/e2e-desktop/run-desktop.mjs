@@ -511,6 +511,151 @@ const scenarios = {
     );
   },
 
+  D15_activity_heatmap_ledger: async (ctx) => {
+    // P0-6: stats bar, daily heatmap, weekly/cumulative tabs, and the
+    // day ledger after a heatmap cell click. All assertions are vision over
+    // deterministic screenshots (the fixture corpus has known usage).
+    d.clickAt(ctx.win, d.NAV.Activity.x, d.NAV.Activity.y);
+    d.sleep(2000);
+    let shot = evidence.shot(ctx, 'activity');
+    await d.visionExpects(
+      shot,
+      'Describe the top of this Activity page: list the stat labels you can read, and say whether a grid of many small squares (a heatmap) is visible.',
+      ['Lifetime tokens', 'Peak tokens', 'Current streak', 'Longest streak'],
+    );
+
+    // Locate the Daily/Weekly/Cumulative tab row by vision.
+    const tabsPos = async (label, fromShot) => {
+      const answer = d.sh(
+        `dim image read ${JSON.stringify(fromShot)} --prompt 'Find the small tab button labeled "${label}" near the top right of the panel (next to Token activity). Give its center as X=NN% Y=NN% (percentages of the whole image). Format only.'`,
+        { timeout: 300_000 },
+      );
+      const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+      if (!m) throw new ScenarioError(`${label} tab not located: ${answer.slice(0, 160)}`);
+      return [
+        Math.round((Number(m[1]) / 100) * ctx.win.width),
+        Math.round((Number(m[2]) / 100) * ctx.win.height),
+      ];
+    };
+    const weeklyPos = await tabsPos('Weekly', shot);
+    d.clickAt(ctx.win, weeklyPos[0], weeklyPos[1]);
+    d.sleep(900);
+    shot = evidence.shot(ctx, 'weekly');
+    await d.visionExpects(
+      shot,
+      'Does this panel show a bar chart of vertical bars now (weekly view)? Answer in one line.',
+      ['bar'],
+    );
+
+    // Back to Daily, then click the brightest heatmap cell (the fixture
+    // day with tokens) and expect the day ledger.
+    const dailyPos = await tabsPos('Daily', shot);
+    d.clickAt(ctx.win, dailyPos[0], dailyPos[1]);
+    d.sleep(1200);
+    shot = evidence.shot(ctx, 'daily');
+    const answer = d.sh(
+      `dim image read ${JSON.stringify(shot)} --prompt 'In the heatmap grid of small squares, find the square with the strongest purple fill (most saturated, level-4). Give its center as X=NN% Y=NN% (percentages of the whole image). Format only.'`,
+      { timeout: 300_000 },
+    );
+    const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+    if (!m) throw new ScenarioError(`cell not located: ${answer.slice(0, 160)}`);
+    d.clickAt(
+      ctx.win,
+      Math.round((Number(m[1]) / 100) * ctx.win.width),
+      Math.round((Number(m[2]) / 100) * ctx.win.height),
+    );
+    d.sleep(1500);
+    shot = evidence.shot(ctx, 'day-ledger');
+    await d.visionExpects(
+      shot,
+      'Below the chart, is there a session activity section for the clicked day — a heading with a month and a session count, and rows mentioning sessions or workspaces? Quote the heading.',
+      ['session'],
+    );
+  },
+
+  D16_recap_five_cards: async (ctx) => {
+    // P0-7: recap list + five-card detail with archetype theming and
+    // prev/next navigation. Uses a fixture recap with sentinel strings.
+    const recapDir = join(ctx.home, '.obelisk', 'recap');
+    mkdirSync(recapDir, { recursive: true });
+    cpSync(
+      join(repo, 'tests/fixtures/recap/recap-e2e.json'),
+      join(recapDir, 'recap-e2e.json'),
+    );
+
+    d.clickAt(ctx.win, d.NAV.Recap.x, d.NAV.Recap.y);
+    d.sleep(2000);
+    let shot = evidence.shot(ctx, 'list');
+    // Click the recap row in the left list to open its cards.
+    const rowAnswer = d.sh(
+      `dim image read ${JSON.stringify(shot)} --prompt 'In the left column, find the list row that shows the file name recap-e2e.json. Give its center as X=NN% Y=NN% (percentages of the whole image). Format only.'`,
+      { timeout: 300_000 },
+    );
+    const rowMatch = rowAnswer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+    if (!rowMatch) throw new ScenarioError(`recap row not located: ${rowAnswer.slice(0, 160)}`);
+    d.clickAt(
+      ctx.win,
+      Math.round((Number(rowMatch[1]) / 100) * ctx.win.width),
+      Math.round((Number(rowMatch[2]) / 100) * ctx.win.height),
+    );
+    d.sleep(1500);
+    shot = evidence.shot(ctx, 'cover');
+    await d.visionExpects(
+      shot,
+      'Is a large card visible now? Quote the big title text on the card.',
+      ['Cover Sentinel Alpha'],
+    );
+
+    // Navigate with the next arrow, located by pixel-scanning the bottom
+    // nav strip for the purple arrow glyph (vision coordinates drift on
+    // full-window shots; pixels do not).
+    const nextArrowPos = (fromShot) => {
+      const strip = '/tmp/d16-nav.txt';
+      d.sh(
+        `convert ${JSON.stringify(fromShot)} -crop '${ctx.win.width}x100+0+${ctx.win.height - 100}' +repage txt:- > ${strip}`,
+      );
+      const purple = [];
+      for (const line of readFileSync(strip, 'utf8').split('\n')) {
+        const m = line.match(/^(\d+),(\d+): \(167,139,250\)/);
+        if (m) purple.push([Number(m[1]), Number(m[2])]);
+      }
+      if (!purple.length) throw new ScenarioError('no purple pixels in nav strip');
+      const maxX = Math.max(...purple.map((p) => p[0]));
+      const right = purple.filter((p) => p[0] >= maxX - 12);
+      const yMid = right.reduce((sum, p) => sum + p[1], 0) / right.length;
+      // The glyph sits inside the 36px circular button; aim a touch left of
+      // the glyph's right edge, vertically centered on it.
+      return [Math.round(maxX - 8), Math.round(ctx.win.height - 100 + yMid)];
+    };
+
+    const clickNext = () => {
+      const shot = evidence.shot(ctx, 'nav');
+      const [ax, ay] = nextArrowPos(shot);
+      d.clickAt(ctx.win, ax, ay);
+      d.sleep(1200);
+    };
+
+    // Path card (one next from Cover).
+    clickNext();
+    shot = evidence.shot(ctx, 'path');
+    await d.visionExpects(
+      shot,
+      'Which card is shown now — quote its title, the eyebrow text at the top of the card, and one prompt line.',
+      ['Path Sentinel Beta', 'thinking path', 'Ship the parser'],
+    );
+
+    // Closing card (three more nexts: Vibe, Workflow, Closing).
+    clickNext();
+    clickNext();
+    clickNext();
+    shot = evidence.shot(ctx, 'closing');
+    await d.visionExpects(
+      shot,
+      'Quote the large centered headline of this card and one line from the receipt list below it.',
+      ['Carved Sentinel Zeta'],
+    );
+  },
+
   D14_settings_rebuild_and_validation: async (ctx) => {
     // P0-8/P0-9 end-to-end. Root validation logic is unit-tested in Rust;
     // here we prove: (a) a settings.json root change hot-applies through the
@@ -679,6 +824,8 @@ const order = [
   'D12_scroll_anchor_on_refresh',
   'D13_memory_archive_flow',
   'D14_settings_rebuild_and_validation',
+  'D15_activity_heatmap_ledger',
+  'D16_recap_five_cards',
 ];
 
 const selected = only ? order.filter((n) => only.some((o) => n.startsWith(o))) : order;
