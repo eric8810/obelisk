@@ -590,6 +590,57 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
     }
 }
 
+/// Whether this session exposes a StatusNotifier tray (Linux). macOS and
+/// Windows always have a tray surface. On Linux we ask the session bus
+/// whether `org.kde.StatusNotifierWatcher` is owned (the StatusNotifierItem
+/// protocol every tray implementation registers). Probing falls back to
+/// "available" when no bus tool exists — keeping current behavior rather
+/// than stranding tray-capable setups.
+fn status_notifier_available() -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    let name = "org.kde.StatusNotifierWatcher";
+    for (command, args) in [
+        (
+            "gdbus",
+            vec![
+                "call".to_string(),
+                "--session".to_string(),
+                "--dest".to_string(),
+                "org.freedesktop.DBus".to_string(),
+                "--object-path".to_string(),
+                "/org/freedesktop/DBus".to_string(),
+                "--method".to_string(),
+                "org.freedesktop.DBus.NameHasOwner".to_string(),
+                name.to_string(),
+            ],
+        ),
+        (
+            "busctl",
+            vec![
+                "--user".to_string(),
+                "call".to_string(),
+                "org.freedesktop.DBus".to_string(),
+                "/org/freedesktop/DBus".to_string(),
+                "org.freedesktop.DBus".to_string(),
+                "NameHasOwner".to_string(),
+                "s".to_string(),
+                name.to_string(),
+            ],
+        ),
+    ] {
+        if let Ok(output) = std::process::Command::new(command).args(&args).output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                return stdout.contains("true");
+            }
+        }
+    }
+    // No bus tooling reachable: assume the tray exists (current behavior).
+    true
+}
+
 fn main() {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -604,8 +655,16 @@ fn main() {
             adabraka_ui::init(cx);
 
             // Tray-resident background app: quitting happens explicitly via the
-            // tray menu, closing the window keeps the app alive.
-            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            // tray menu, closing the window keeps the app alive. On desktops
+            // WITHOUT a status-notifier area (plain GNOME), tray residency
+            // would strand the app: closing the window leaves a process the
+            // user cannot reopen or quit — so there we quit with the last
+            // window instead.
+            if status_notifier_available() {
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+            } else {
+                cx.set_quit_mode(gpui::QuitMode::LastWindowClosed);
+            }
             cx.set_tray_tooltip("Obelisk");
             cx.set_tray_menu(vec![
                 gpui::TrayMenuItem::Action {

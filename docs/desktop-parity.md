@@ -39,8 +39,8 @@
 | P0-7 | Recap | 详情为 JSON 原文直出;五张卡牌(Cover/Path/Vibe/Workflow/Closing)与 archetype 主题未渲染 | 选定周报渲染五卡,键盘 ←/→ 翻页,archetype 调色板生效 |
 | P0-8 | Settings | 手动 Rebuild index 完全缺失 | About 区按钮触发全量重建,进行中禁用+文案,失败红字 |
 | P0-9 | Settings | root 保存无校验/反馈:坏路径静默失效;daemon watcher/registry 不跟随新配置(需重启但状态行宣称"已重建") | 非法路径即时红字提示;保存后 daemon 监听新根(不重启) |
-| P0-10 | 骨架 | **条件性**:无 tray 扩展桌面(默认 GNOME)上关窗后进程存活但无重开/退出入口,应用"消失" | 无 tray 环境关窗=退出,或提供等效重开途径(实机验证 GNOME) |
-| P0-11 | 列表 | **崩溃风险**:标题高亮按 `to_lowercase` 字节偏移切片原串,大小写折叠改变字节长度时 panic | 含特殊大小写字符(如 `İ`)标题渲染不 panic(构造用例) |
+| P0-10 | 骨架 | **✅ 已修复(M4.0)**:启动探测 StatusNotifierWatcher(busctl/gdbus);无 tray 桌面关窗即退(LastWindowClosed),有 tray 保持常驻(Explicit,本机 Hyprland 实测 true,D8 不变) | 探测代码路径已验证;GNOME 实机复测待做 |
+| P0-11 | 列表 | **✅ 已修复(M4.0)**:char 级折叠匹配(folded 流 + 原 char 边界映射),单测覆盖 İ 1:N 折叠命中/ß 不命中(parity JS)/reassemble 精确性 | `highlight_segments_*` 2 个单测 |
 | P0-12 | 骨架 | 全局键盘层缺失:Cmd/Ctrl+1/2/3、`s` 排序、Esc 清选/清词均无(影响高频操作路径) | 快捷键逐条按下行为符合下表 #25-33 |
 | P0-13 | 时间线 | Memory 域键盘导航全缺(j/k/Enter/x/D/u/Cmd+Z)(与 P0-3/4 同批交付) | 键盘可完成浏览/勾选/归档/撤销全流程 |
 
@@ -257,6 +257,10 @@
 | 13-14 | 附加字段/无外观设置 | 双方一致未用/均无 | P | 一致 |
 
 ---
+
+## 修复进度
+
+- **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 
 ## 修复路线(建议批次)
 

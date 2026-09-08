@@ -358,34 +358,133 @@ fn session_row(
 
 /// Title with query matches highlighted (Vue `highlightPlain`): plain
 /// segments in the row color, matching segments in the accent color.
+///
+/// Matching happens over the case-folded character stream, but segments are
+/// always cut on original-character boundaries — a byte-offset approach
+/// panics whenever case folding changes the byte length (e.g. `İ`, `ß`).
 fn highlighted_title(title: &str, query: &str) -> gpui::AnyElement {
     let mut parts = gpui::div().flex().gap_0p5().flex_wrap();
-    if query.is_empty() {
-        return parts.child(title.to_string()).into_any_element();
-    }
-    let query_lower = query.to_lowercase();
-    let title_lower = title.to_lowercase();
-    let mut cursor = 0;
-    while cursor < title.len() {
-        match title_lower[cursor..].find(&query_lower) {
-            Some(offset) => {
-                let start = cursor + offset;
-                let end = start + query.len().min(title.len() - start);
-                if start > cursor {
-                    parts = parts.child(title[cursor..start].to_string());
-                }
-                parts = parts.child(
-                    gpui::div()
-                        .text_color(gpui::rgb(0xbb9af7))
-                        .child(title[start..end].to_string()),
-                );
-                cursor = end;
-            }
-            None => {
-                parts = parts.child(title[cursor..].to_string());
-                break;
-            }
+    for (text, hit) in highlight_segments(title, query) {
+        if hit {
+            parts = parts.child(gpui::div().text_color(gpui::rgb(0xbb9af7)).child(text));
+        } else {
+            parts = parts.child(text);
         }
     }
     parts.into_any_element()
+}
+
+/// Case-insensitive query match segments over `title`, always cut on
+/// original-character boundaries. A byte-offset approach panics whenever
+/// case folding changes the byte length (e.g. `İ` folds to two chars, `ß`
+/// to `ss`); matching instead happens on the folded character stream and
+/// ranges map back through a per-character index.
+pub fn highlight_segments(title: &str, query: &str) -> Vec<(String, bool)> {
+    let title_chars: Vec<char> = title.chars().collect();
+    if query.is_empty() || title_chars.is_empty() {
+        return vec![(title.to_string(), false)];
+    }
+    let query_folded: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
+    let mut folded: Vec<char> = Vec::with_capacity(title_chars.len());
+    let mut fold_to_orig: Vec<usize> = Vec::new();
+    for (ix, ch) in title_chars.iter().enumerate() {
+        for folded_ch in ch.to_lowercase() {
+            folded.push(folded_ch);
+            fold_to_orig.push(ix);
+        }
+    }
+    if query_folded.is_empty() || query_folded.len() > folded.len() {
+        return vec![(title.to_string(), false)];
+    }
+    let mut segments: Vec<(usize, usize, bool)> = Vec::new(); // (orig start, orig end, hit)
+    let mut plain_start = 0usize;
+    let mut fold_ix = 0usize;
+    while fold_ix + query_folded.len() <= folded.len() {
+        if folded[fold_ix..fold_ix + query_folded.len()] == query_folded[..] {
+            let orig_start = fold_to_orig[fold_ix];
+            let orig_end = fold_to_orig[fold_ix + query_folded.len() - 1] + 1;
+            if orig_start > plain_start {
+                segments.push((plain_start, orig_start, false));
+            }
+            segments.push((orig_start, orig_end, true));
+            fold_ix += query_folded.len();
+            plain_start = orig_end;
+        } else {
+            fold_ix += 1;
+        }
+    }
+    if plain_start < title_chars.len() {
+        segments.push((plain_start, title_chars.len(), false));
+    }
+    segments
+        .into_iter()
+        .map(|(start, end, hit)| (title_chars[start..end].iter().collect(), hit))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// The highlighter must never panic, whatever the case-folding does to
+    /// byte lengths (İ folds to two chars, ß to "ss"), and must emit the
+    /// full title across its segments.
+    use super::highlight_segments;
+
+    #[test]
+    fn highlight_segments_reassemble_the_title_exactly() {
+        for (title, query) in [
+            ("Fix auth bug", "auth"),
+            ("修复登录问题", "登录"),
+            ("İstanbul session", "ist"),
+            ("straße session", "ss"),
+            ("emoji 🎉 title", "🎉"),
+            ("tiny", "tiny but longer than title"),
+            ("", "x"),
+            ("case-insensitive MATCH", "match"),
+            ("multi multi multi", "multi"),
+        ] {
+            let segments = highlight_segments(title, query);
+            let reassembled: String = segments.iter().map(|(text, _)| text.as_str()).collect();
+            assert_eq!(reassembled, title, "segments must reassemble the title");
+            assert!(
+                segments.iter().any(|(_, hit)| *hit)
+                    || !title.to_lowercase().contains(&query.to_lowercase()),
+                "a hit segment must exist whenever the folded query occurs"
+            );
+        }
+    }
+
+    #[test]
+    fn highlight_segments_mark_the_right_range() {
+        let segments = highlight_segments("Fix auth bug", "AUTH");
+        assert_eq!(segments.len(), 3, "{segments:?}");
+        assert_eq!(segments[0], ("Fix ".to_string(), false));
+        assert_eq!(segments[1], ("auth".to_string(), true));
+        assert_eq!(segments[2], (" bug".to_string(), false));
+
+        // `ß` lowercases to itself (same as JS toLowerCase, so "ss" does not
+        // match — parity with the original highlighter); no hit, no panic.
+        let segments = highlight_segments("straße", "ss");
+        assert_eq!(segments, vec![("straße".to_string(), false)]);
+
+        // `İ` folds to two chars ("i" + combining dot). A query carrying the
+        // combining dot explicitly matches across the expansion; the hit
+        // segment must cover the whole original `İ` char (no mid-char
+        // slicing, no panic).
+        let segments = highlight_segments("İstanbul ops", "i\u{0307}st");
+        let reassembled: String = segments.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(reassembled, "İstanbul ops");
+        assert!(segments.iter().any(|(_, hit)| *hit));
+        let hit_text: String = segments
+            .iter()
+            .filter(|(_, hit)| *hit)
+            .map(|(text, _)| text.clone())
+            .collect();
+        assert_eq!(hit_text, "İst");
+
+        // Plain "istan" does not match "İstanbul" (the folded form carries
+        // the combining dot) — same as JS toLowerCase in the original app.
+        let segments = highlight_segments("İstanbul ops", "istan");
+        assert_eq!(segments, vec![("İstanbul ops".to_string(), false)]);
+    }
 }
