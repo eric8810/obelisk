@@ -105,7 +105,21 @@ pub struct MemoryEntry {
     pub summary: String,
     pub created_at: String,
     pub deleted_at: Option<String>,
+    #[allow(dead_code)] // shown in a future detail affordance
     pub deleted_reason: Option<String>,
+    /// First/last message uuids the memory was distilled from (detail view).
+    pub message_start: Option<String>,
+    pub message_end: Option<String>,
+    /// Anchor `path:line` buttons (detail view; may be empty).
+    pub anchors: Vec<MemoryAnchor>,
+}
+
+/// One memory anchor: a file/line provenance button.
+#[derive(Debug, Clone)]
+pub struct MemoryAnchor {
+    pub path: String,
+    pub line: Option<i64>,
+    pub exists: bool,
 }
 
 impl MemoryEntry {
@@ -120,12 +134,15 @@ pub fn load_memories(home: &Path) -> Vec<MemoryEntry> {
     };
     let Ok(mut stmt) = conn.prepare(
         "SELECT id, session_id, project, path, COALESCE(summary, ''),
-                COALESCE(created_at, ''), deleted_at, deleted_reason
+                COALESCE(created_at, ''), deleted_at, deleted_reason,
+                message_start, message_end, COALESCE(anchors, '[]')
          FROM memories ORDER BY created_at DESC",
     ) else {
         return Vec::new();
     };
     let Ok(rows) = stmt.query_map([], |row| {
+        let anchors_raw: Option<String> = row.get(10)?;
+        let anchors = parse_memory_anchors(anchors_raw.as_deref().unwrap_or("[]"));
         Ok(MemoryEntry {
             id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
             session_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -135,11 +152,86 @@ pub fn load_memories(home: &Path) -> Vec<MemoryEntry> {
             created_at: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
             deleted_at: row.get(6)?,
             deleted_reason: row.get(7)?,
+            message_start: row.get(8)?,
+            message_end: row.get(9)?,
+            anchors,
         })
     }) else {
         return Vec::new();
     };
     rows.flatten().collect()
+}
+
+/// Parse the memories table's anchors JSON (`[{path, line?, exists?}]`,
+/// written by the indexer's remember() flow). Malformed input yields an
+/// empty list rather than failing the whole view.
+fn parse_memory_anchors(raw: &str) -> Vec<MemoryAnchor> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        Some(MemoryAnchor {
+                            path: item.get("path")?.as_str()?.to_string(),
+                            line: item.get("line").and_then(|v| v.as_i64()),
+                            exists: item.get("exists").and_then(|v| v.as_bool()).unwrap_or(true),
+                        })
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Archive a memory (Vue parity: deleted_at = now, deleted_reason default).
+/// The write goes through the writer lease — the app daemon owns index
+/// writes (ADR-0013 Stage 3), and memories are no exception.
+pub fn archive_memory(home: &Path, id: &str) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    mutate_memory(home, |conn| {
+        conn.execute(
+            "UPDATE memories SET deleted_at = ?2, deleted_reason = 'Archived via panel' WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![id, now],
+        )
+    })
+    .map(|_| ())
+}
+
+/// Restore an archived memory (deleted_at/deleted_reason cleared).
+pub fn restore_memory(home: &Path, id: &str) -> Result<(), String> {
+    mutate_memory(home, |conn| {
+        conn.execute(
+            "UPDATE memories SET deleted_at = NULL, deleted_reason = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
+            rusqlite::params![id],
+        )
+    })
+    .map(|_| ())
+}
+
+/// One memory mutation under the writer lease.
+fn mutate_memory(
+    home: &Path,
+    work: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<usize>,
+) -> Result<usize, String> {
+    let db_path = obelisk_core::db::db_path(home);
+    if !db_path.exists() {
+        return Err("index does not exist yet".to_string());
+    }
+    let lease = obelisk_core::writer_lease::acquire_writer_lease(
+        &obelisk_core::writer_lease::writer_lock_path_for(&db_path),
+        obelisk_core::writer_lease::AcquireOptions {
+            wait_ms: 1000,
+            retry_delay_ms: 25,
+        },
+    )
+    .ok_or_else(|| "another writer holds the index (writer_busy)".to_string())?;
+    let result = db::open_db(home)
+        .map_err(|e| e.to_string())
+        .and_then(|conn| work(&conn).map_err(|e| e.to_string()));
+    lease.release();
+    result
 }
 
 /// Read one memory's markdown file. The path comes from the indexer-written

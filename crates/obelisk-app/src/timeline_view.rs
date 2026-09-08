@@ -138,6 +138,8 @@ pub struct TimelineView {
     pub focus: FocusHandle,
     /// Disclosure (collapse) flags for the timeline's cards.
     pub ui_state: Rc<TimelineUiState>,
+    /// Message uuid receiving a temporary accent border (traceability jumps).
+    pub focus_highlight: Option<(String, std::time::Instant)>,
     pub on_back: TimelineBackFn,
     /// Reload the open session from the shared index (follow-tail refresh).
     pub on_refresh: TimelineRefreshFn,
@@ -163,6 +165,7 @@ impl RenderOnce for TimelineView {
         let list_state_key = self.list_state.clone();
         let on_refresh = self.on_refresh.clone();
         let focus = self.focus;
+        let focus_highlight = self.focus_highlight.clone();
 
         gpui::div()
             .flex_1()
@@ -279,8 +282,13 @@ impl RenderOnce for TimelineView {
                             items.get(ix).map_or_else(
                                 || gpui::div().into_any_element(),
                                 |item| {
-                                    timeline_item_view(item, &ui_state_items, &home)
-                                        .into_any_element()
+                                    timeline_item_view(
+                                        item,
+                                        &ui_state_items,
+                                        &home,
+                                        &focus_highlight,
+                                    )
+                                    .into_any_element()
                                 },
                             )
                         })
@@ -294,7 +302,11 @@ fn timeline_item_view(
     item: &TimelineItem,
     ui: &Rc<TimelineUiState>,
     home: &Rc<std::path::PathBuf>,
+    focus_highlight: &Option<(String, std::time::Instant)>,
 ) -> impl IntoElement + use<> {
+    let highlighted = focus_highlight.as_ref().is_some_and(|(uuid, until)| {
+        item.message_uuid == *uuid && std::time::Instant::now() < *until
+    });
     let message = &item.message;
     let kind_label = match item.kind {
         TimelineKind::Meta => "meta",
@@ -398,7 +410,7 @@ fn timeline_item_view(
         }
     }
 
-    gpui::div()
+    let card = gpui::div()
         .id(gpui::SharedString::from(item.message_uuid.clone()))
         .w_full()
         .px_6()
@@ -407,26 +419,35 @@ fn timeline_item_view(
         .flex_col()
         .gap_2()
         .border_b_1()
-        .border_color(gpui::rgb(0x222226))
-        .child(
-            gpui::div()
-                .w_full()
-                .flex()
-                .justify_between()
-                .text_size(px(11.0))
-                .text_color(gpui::rgb(0x77777f))
-                .child(
-                    gpui::div()
-                        .text_color(if is_user {
-                            gpui::rgb(0x7aa2f7)
-                        } else {
-                            gpui::rgb(0x9ece6a)
-                        })
-                        .child(role),
-                )
-                .child(gpui::div().child(timestamp)),
-        )
-        .child(column)
+        .border_color(if highlighted {
+            crate::theme::ACCENT
+        } else {
+            gpui::rgb(0x222226)
+        });
+    let card = if highlighted {
+        card.rounded_md().border_1().bg(crate::theme::ACCENT_SOFT)
+    } else {
+        card
+    };
+    card.child(
+        gpui::div()
+            .w_full()
+            .flex()
+            .justify_between()
+            .text_size(px(11.0))
+            .text_color(gpui::rgb(0x77777f))
+            .child(
+                gpui::div()
+                    .text_color(if is_user {
+                        gpui::rgb(0x7aa2f7)
+                    } else {
+                        gpui::rgb(0x9ece6a)
+                    })
+                    .child(role),
+            )
+            .child(gpui::div().child(timestamp)),
+    )
+    .child(column)
 }
 
 fn tool_call_view(

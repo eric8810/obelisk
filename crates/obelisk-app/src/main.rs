@@ -127,6 +127,17 @@ struct ObeliskApp {
     settings_status: Option<String>,
     /// Reading-position cache for recently viewed sessions (LRU 12).
     reader_states: Vec<(String, ReaderState)>,
+    /// Memory sub-view (sidebar Active/Archived rows).
+    memory_tab: crate::views::MemoryTab,
+    /// Memory keyboard cursor (memory id) + checkbox selection.
+    memory_cursor: Option<String>,
+    memory_selection: std::collections::HashSet<String>,
+    memory_sort_desc: bool,
+    /// Pending memory undo (label + action target + expiry).
+    memory_undo: Option<MemoryUndo>,
+    /// Memory search box + focus target for the keyboard layer.
+    memory_search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
+    memory_focus: gpui::FocusHandle,
     /// Session-list search box state (Vue: `/` focuses, filters by
     /// title/project/branch client-side). Observed → `search_query`.
     search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
@@ -149,6 +160,9 @@ struct TimelineScreenState {
     focus: gpui::FocusHandle,
     /// Collapsible-card disclosure flags, retained across refreshes.
     ui_state: std::rc::Rc<timeline_view::TimelineUiState>,
+    /// Message uuid receiving a temporary focus highlight (traceability
+    /// jumps), with its expiry.
+    focus_highlight: Option<(String, std::time::Instant)>,
 }
 
 /// Per-session reading position, restored when the session is reopened
@@ -162,6 +176,15 @@ struct ReaderState {
     following_tail: bool,
     /// Disclosure flags for collapsible cards.
     ui_state: std::rc::Rc<timeline_view::TimelineUiState>,
+}
+
+/// A pending memory archive/restore that can still be undone (5s window).
+struct MemoryUndo {
+    memory_id: String,
+    /// true = it was an archive (undo restores), false = restore (undo archives).
+    was_archive: bool,
+    label: String,
+    until: std::time::Instant,
 }
 
 /// Reader-state LRU size (parity: `session-reader-state` keeps 12 sessions).
@@ -213,6 +236,8 @@ impl ObeliskApp {
             }
         });
         let sessions_focus = cx.focus_handle();
+        let memory_focus = cx.focus_handle();
+        let memory_search_state = cx.new(adabraka_ui::components::input_state::InputState::new);
         // Keyboard starts on the sessions panel so `/` opens search right away.
         window.focus(&sessions_focus);
         // Tray-resident watcher daemon (process-wide singleton): incremental
@@ -244,6 +269,13 @@ impl ObeliskApp {
             search_hits: Vec::new(),
             sessions_focus,
             _search_subscription: subscription,
+            memory_tab: crate::views::MemoryTab::Active,
+            memory_cursor: None,
+            memory_selection: std::collections::HashSet::new(),
+            memory_sort_desc: true,
+            memory_undo: None,
+            memory_search_state,
+            memory_focus,
         }
     }
 
@@ -262,6 +294,7 @@ impl ObeliskApp {
                 window.focus(&self.sessions_focus);
             }
             crate::views::AppView::Memory => {
+                window.focus(&self.memory_focus);
                 self.memories = Some(std::rc::Rc::new(crate::data::load_memories(&self.home)));
                 self.selected_memory = None;
             }
@@ -341,10 +374,8 @@ impl ObeliskApp {
             // fc-gpui's list itself.
             let follow_list = list_state.clone();
             list_state.set_scroll_handler(move |event, _window, _cx| {
-                if !event.is_following_tail {
-                    if follow_list.is_scrolled_to_end() == Some(true) {
-                        follow_list.set_follow_tail(true);
-                    }
+                if !event.is_following_tail && follow_list.is_scrolled_to_end() == Some(true) {
+                    follow_list.set_follow_tail(true);
                 }
             });
             // Restore the reading position for a revisited session
@@ -372,6 +403,7 @@ impl ObeliskApp {
                     list_state,
                     focus,
                     ui_state: reader.ui_state,
+                    focus_highlight: None,
                 });
                 cx.notify();
                 return;
@@ -384,7 +416,215 @@ impl ObeliskApp {
                 list_state,
                 focus,
                 ui_state: std::rc::Rc::new(timeline_view::TimelineUiState::new()),
+                focus_highlight: None,
             });
+        }
+        cx.notify();
+    }
+
+    /// Switch the Memory sub-view (sidebar Active/Archived sub-rows).
+    fn select_memory_tab(
+        &mut self,
+        tab: crate::views::MemoryTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.memory_tab = tab;
+        self.memory_cursor = None;
+        self.memory_selection.clear();
+        self.selected_memory = None;
+        if self.view != crate::views::AppView::Memory {
+            self.select_view(crate::views::AppView::Memory, window, cx);
+        }
+        window.focus(&self.memory_focus);
+        cx.notify();
+    }
+
+    /// Archive (Active tab) or restore (Archived tab) one memory, arming undo.
+    fn toggle_memory_archive(
+        &mut self,
+        memory_id: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let archive = self.memory_tab == crate::views::MemoryTab::Active;
+        let result = if archive {
+            crate::data::archive_memory(&self.home, memory_id)
+        } else {
+            crate::data::restore_memory(&self.home, memory_id)
+        };
+        match result {
+            Ok(()) => {
+                let label = if archive {
+                    format!("Archived {memory_id} — Restore?")
+                } else {
+                    format!("Restored {memory_id} — Archive again?")
+                };
+                self.memory_undo = Some(MemoryUndo {
+                    memory_id: memory_id.to_string(),
+                    was_archive: archive,
+                    label,
+                    until: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                });
+                // Keep the undo window ticking so the bar disappears on time.
+                cx.notify();
+                cx.spawn(async move |app, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(5100))
+                        .await;
+                    if let Some(app) = app.upgrade() {
+                        let _ = app.update(cx, |app: &mut Self, cx| {
+                            if let Some(undo) = &app.memory_undo {
+                                if std::time::Instant::now() >= undo.until {
+                                    app.memory_undo = None;
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    }
+                })
+                .detach();
+                self.reload_memory(cx);
+            }
+            Err(error) => {
+                eprintln!("obelisk: memory mutation failed: {error}");
+            }
+        }
+    }
+
+    /// Undo the pending memory archive/restore.
+    fn undo_memory_action(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(undo) = self.memory_undo.take() else {
+            return;
+        };
+        let result = if undo.was_archive {
+            crate::data::restore_memory(&self.home, &undo.memory_id)
+        } else {
+            crate::data::archive_memory(&self.home, &undo.memory_id)
+        };
+        if let Err(error) = result {
+            eprintln!("obelisk: memory undo failed: {error}");
+        }
+        self.reload_memory(cx);
+    }
+
+    /// Reload memories + the app data counts (badges change with archive state).
+    fn reload_memory(&mut self, cx: &mut Context<Self>) {
+        if let Some(home) = Some(self.home.clone()) {
+            self.memories = Some(std::rc::Rc::new(crate::data::load_memories(&home)));
+            self.data = AppData::load(&home, &std::path::PathBuf::from("."));
+        }
+        cx.notify();
+    }
+
+    /// Memory keyboard: move the cursor among the visible (filtered) ids.
+    fn memory_cursor_move(&mut self, delta: i32, _window: &mut Window, cx: &mut Context<Self>) {
+        let memories = self.memories.clone().unwrap_or_default();
+        let tab = self.memory_tab;
+        let query = self
+            .memory_search_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_lowercase();
+        let ids: Vec<String> = memories
+            .iter()
+            .filter(|m| m.archived() == (tab == crate::views::MemoryTab::Archived))
+            .filter(|m| {
+                query.is_empty()
+                    || m.path.to_lowercase().contains(&query)
+                    || m.summary.to_lowercase().contains(&query)
+            })
+            .map(|m| m.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let ix = self
+            .memory_cursor
+            .as_ref()
+            .and_then(|id| ids.iter().position(|candidate| candidate == id))
+            .map(|ix| ix as i64 + delta as i64)
+            .unwrap_or(0)
+            .clamp(0, ids.len() as i64 - 1) as usize;
+        self.memory_cursor = Some(ids[ix].clone());
+        cx.notify();
+    }
+
+    /// Memory keyboard: open the cursor row's detail.
+    fn memory_open_detail(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.memory_cursor.clone() else {
+            return;
+        };
+        let memories = self.memories.clone().unwrap_or_default();
+        if let Some(ix) = memories.iter().position(|m| m.id == id) {
+            self.selected_memory = Some(ix);
+            cx.notify();
+        }
+    }
+
+    /// Memory keyboard: toggle the check mark on the cursor row.
+    fn memory_toggle_check(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.memory_cursor.clone() {
+            if !self.memory_selection.remove(&id) {
+                self.memory_selection.insert(id);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Memory keyboard: archive/restore the selection (or the cursor row).
+    fn memory_archive_key_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let targets: Vec<String> = if self.memory_selection.is_empty() {
+            self.memory_cursor.clone().into_iter().collect()
+        } else {
+            self.memory_selection.iter().cloned().collect()
+        };
+        for id in &targets {
+            self.toggle_memory_archive(id, window, cx);
+        }
+    }
+
+    /// Memory keyboard: clear the selection.
+    fn memory_clear(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.memory_selection.clear();
+        cx.notify();
+    }
+
+    /// Toggle memory sort (newest/oldest).
+    fn memory_sort_toggle(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.memory_sort_desc = !self.memory_sort_desc;
+        cx.notify();
+    }
+
+    /// Open a session scrolled to (and briefly highlighting) one message —
+    /// the memory "View conversation" traceability path.
+    fn open_session_focused(
+        &mut self,
+        session_id: String,
+        focus_uuid: String,
+        home: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Entering a timeline is a Sessions-view concern; a memory jump can
+        // arrive from any view, so switch first.
+        self.view = crate::views::AppView::Sessions;
+        self.open_session(session_id, home, window, cx);
+        if let Some(screen) = self.timeline.as_mut() {
+            if !focus_uuid.is_empty() {
+                if let Some(ix) = screen
+                    .items
+                    .iter()
+                    .position(|item| item.message_uuid == focus_uuid)
+                {
+                    screen.list_state.scroll_to_reveal_item(ix);
+                    screen.focus_highlight = Some((
+                        focus_uuid.clone(),
+                        std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    ));
+                }
+            }
         }
         cx.notify();
     }
@@ -525,13 +765,137 @@ impl gpui::Render for ObeliskApp {
             .child(match self.view {
                 crate::views::AppView::Sessions => sessions_panel(self, cx),
                 crate::views::AppView::Memory => {
+                    // NOTE: focus is set by select_view/select_memory_tab; calling
+                    // window.focus() during render drops the frame (GPUI
+                    // re-enters layout) — which made every view switch render
+                    // one frame late and look like dead clicks.
                     let app_handle = cx.entity();
+                    // Tab + project filtering happens here; search inside the view.
+                    let tab = self.memory_tab;
+                    let project = self.selected_project.clone();
+                    let memories = self
+                        .memories
+                        .clone()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|m| m.archived() == (tab == crate::views::MemoryTab::Archived))
+                        .filter(|m| match &project {
+                            Some(slug) => &m.project == slug,
+                            None => true,
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
                     crate::views::MemoryView {
-                        memories: self.memories.clone().unwrap_or_default(),
+                        tab,
+                        memories: std::rc::Rc::new(memories),
+                        query: self.memory_search_state.read(cx).content().to_string(),
                         selected: self.selected_memory,
-                        on_select: std::rc::Rc::new(move |ix, window, cx| {
-                            app_handle.update(cx, |app, cx| app.select_memory(ix, window, cx));
-                        }),
+                        cursor_id: self.memory_cursor.clone(),
+                        selection: std::rc::Rc::new(self.memory_selection.clone()),
+                        sort_desc: self.memory_sort_desc,
+                        undo: self
+                            .memory_undo
+                            .as_ref()
+                            .map(|undo| (undo.label.clone(), undo.until)),
+                        search: self.memory_search_state.clone(),
+                        focus: self.memory_focus.clone(),
+                        on_select: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |ix, window, cx| {
+                                app_handle.update(cx, |app, cx| app.select_memory(ix, window, cx));
+                            })
+                        },
+                        on_toggle_archive: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |id, window, cx| {
+                                app_handle.update(cx, |app, cx| {
+                                    app.toggle_memory_archive(id, window, cx)
+                                });
+                            })
+                        },
+                        on_undo: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |window, cx| {
+                                app_handle.update(cx, |app, cx| app.undo_memory_action(window, cx));
+                            })
+                        },
+                        on_open_session: {
+                            let app_handle = app_handle.clone();
+                            let home = self.home.clone();
+                            let cursor = self.memory_cursor.clone();
+                            let memories = self.memories.clone().unwrap_or_default();
+                            std::rc::Rc::new(move |session_id, focus_uuid, window, cx| {
+                                // Empty ids mean the keyboard action: use the
+                                // cursor row's session and message range.
+                                let (session_id, focus_uuid) = if session_id.is_empty() {
+                                    let memory =
+                                        memories.iter().find(|m| Some(&m.id) == cursor.as_ref());
+                                    match memory {
+                                        Some(memory) => (
+                                            memory.session_id.clone(),
+                                            memory.message_start.clone().unwrap_or_default(),
+                                        ),
+                                        None => return,
+                                    }
+                                } else {
+                                    (session_id.to_string(), focus_uuid.to_string())
+                                };
+                                let home = home.clone();
+                                app_handle.update(cx, |app, cx| {
+                                    app.open_session_focused(
+                                        session_id, focus_uuid, home, window, cx,
+                                    )
+                                });
+                            })
+                        },
+                        on_sort: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |window, cx| {
+                                app_handle.update(cx, |app, cx| app.memory_sort_toggle(window, cx));
+                            })
+                        },
+                        on_cursor_move: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |delta, window, cx| {
+                                app_handle.update(cx, |app, cx| {
+                                    app.memory_cursor_move(delta, window, cx)
+                                });
+                            })
+                        },
+                        on_open_detail: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |window, cx| {
+                                app_handle.update(cx, |app, cx| app.memory_open_detail(window, cx));
+                            })
+                        },
+                        on_toggle_check: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |window, cx| {
+                                app_handle
+                                    .update(cx, |app, cx| app.memory_toggle_check(window, cx));
+                            })
+                        },
+                        on_archive_key: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |window, cx| {
+                                app_handle.update(cx, |app, cx| {
+                                    app.memory_archive_key_action(window, cx)
+                                });
+                            })
+                        },
+                        on_clear: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |window, cx| {
+                                app_handle.update(cx, |app, cx| app.memory_clear(window, cx));
+                            })
+                        },
+                        on_tab: {
+                            let app_handle = app_handle.clone();
+                            std::rc::Rc::new(move |tab, window, cx| {
+                                app_handle
+                                    .update(cx, |app, cx| app.select_memory_tab(tab, window, cx));
+                            })
+                        },
                     }
                     .into_any_element()
                 }
@@ -678,6 +1042,7 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
             list_state: screen.list_state.clone(),
             focus: screen.focus.clone(),
             ui_state: screen.ui_state.clone(),
+            focus_highlight: screen.focus_highlight.clone(),
             on_back: std::rc::Rc::new(move |_ev, window, cx| {
                 app_handle.update(cx, |app, cx| app.close_timeline(window, cx));
             }),
@@ -775,6 +1140,31 @@ fn main() {
         .with_http_client(std::sync::Arc::new(LocalImageHttpClient))
         .run(move |cx: &mut App| {
             adabraka_ui::init(cx);
+
+            // Memory keyboard layer (parity: j/k/Enter/x/d/u/Esc inside the
+            // memory list; Cmd/Ctrl+2/3 jump to Active/Archived globally).
+            use gpui::KeyBinding;
+            cx.bind_keys(vec![
+                KeyBinding::new("j", crate::views::MemoryCursorDown, Some("MemoryList")),
+                KeyBinding::new("down", crate::views::MemoryCursorDown, Some("MemoryList")),
+                KeyBinding::new("k", crate::views::MemoryCursorUp, Some("MemoryList")),
+                KeyBinding::new("up", crate::views::MemoryCursorUp, Some("MemoryList")),
+                KeyBinding::new("enter", crate::views::MemoryOpenDetail, Some("MemoryList")),
+                KeyBinding::new("m", crate::views::MemoryOpenDetail, Some("MemoryList")),
+                KeyBinding::new(
+                    "v",
+                    crate::views::MemoryOpenConversation,
+                    Some("MemoryList"),
+                ),
+                KeyBinding::new("x", crate::views::MemoryToggleCheck, Some("MemoryList")),
+                KeyBinding::new("d", crate::views::MemoryArchiveSelected, Some("MemoryList")),
+                KeyBinding::new("u", crate::views::MemoryUndoAction, Some("MemoryList")),
+                KeyBinding::new(
+                    "escape",
+                    crate::views::MemoryClearSelection,
+                    Some("MemoryList"),
+                ),
+            ]);
 
             // Tray-resident background app: quitting happens explicitly via the
             // tray menu, closing the window keeps the app alive. On desktops
@@ -990,6 +1380,7 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
     let current_view = app.view;
     let in_timeline = app.timeline.is_some();
     let selected_project = app.selected_project.clone();
+    let memory_tab_is_active = app.memory_tab == crate::views::MemoryTab::Active;
 
     gpui::div()
         .id("sidebar")
@@ -1061,11 +1452,13 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                         icon_name: Some("dot-filled"),
                         label: "Active".to_string(),
                         badge: Some(memory_active),
-                        active: current_view == crate::views::AppView::Memory && !in_timeline,
+                        active: current_view == crate::views::AppView::Memory
+                            && !in_timeline
+                            && memory_tab_is_active,
                         sub: true,
                     },
                     Box::new(|app, window, cx| {
-                        app.select_view(crate::views::AppView::Memory, window, cx);
+                        app.select_memory_tab(crate::views::MemoryTab::Active, window, cx);
                     }),
                     cx,
                 ))
@@ -1075,11 +1468,13 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                         icon_name: Some("dot-outline"),
                         label: "Archived".to_string(),
                         badge: Some(memory_archived),
-                        active: false,
+                        active: current_view == crate::views::AppView::Memory
+                            && !in_timeline
+                            && !memory_tab_is_active,
                         sub: true,
                     },
                     Box::new(|app, window, cx| {
-                        app.select_view(crate::views::AppView::Memory, window, cx);
+                        app.select_memory_tab(crate::views::MemoryTab::Archived, window, cx);
                     }),
                     cx,
                 )),
@@ -1126,52 +1521,42 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
         .child(
             gpui::div()
                 .id("projects")
-                .flex_1()
-                .min_h_0()
+                // Natural height (the original CSS pins Settings with
+                // margin-top:auto; gpui's flex_1 + nested scroll combos
+                // over-measure here and pushed Settings off-window).
                 .flex()
                 .flex_col()
                 .px(px(6.0))
                 .pt_2()
+                .pb_2()
                 .child(section_title("Projects"))
-                // The list scrolls inside the section (`.sidebar-list`),
-                // so the bottom Settings row never leaves the viewport.
-                .child(
-                    gpui::div()
-                        .id("project-list")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .children(projects.iter().map(|p| {
-                            let is_selected = current_view == crate::views::AppView::Sessions
-                                && !in_timeline
-                                && selected_project.as_deref() == Some(p.slug.as_str());
-                            let slug = p.slug.clone();
-                            let count = p.session_count;
-                            sidebar_row(
-                                SidebarRowSpec {
-                                    id: format!("project-{slug}").into(),
-                                    icon_name: Some("folder"),
-                                    label: p.slug.clone(),
-                                    badge: Some(count),
-                                    active: is_selected,
-                                    sub: false,
-                                },
-                                Box::new(move |app, window, cx| {
-                                    app.select_view(crate::views::AppView::Sessions, window, cx);
-                                    let next =
-                                        if app.selected_project.as_deref() == Some(slug.as_str()) {
-                                            None
-                                        } else {
-                                            Some(slug.clone())
-                                        };
-                                    app.select_project(next, window, cx);
-                                }),
-                                cx,
-                            )
-                        })),
-                ),
+                .children(projects.iter().map(|p| {
+                    let is_selected = current_view == crate::views::AppView::Sessions
+                        && !in_timeline
+                        && selected_project.as_deref() == Some(p.slug.as_str());
+                    let slug = p.slug.clone();
+                    let count = p.session_count;
+                    sidebar_row(
+                        SidebarRowSpec {
+                            id: format!("project-{slug}").into(),
+                            icon_name: Some("folder"),
+                            label: p.slug.clone(),
+                            badge: Some(count),
+                            active: is_selected,
+                            sub: false,
+                        },
+                        Box::new(move |app, window, cx| {
+                            app.select_view(crate::views::AppView::Sessions, window, cx);
+                            let next = if app.selected_project.as_deref() == Some(slug.as_str()) {
+                                None
+                            } else {
+                                Some(slug.clone())
+                            };
+                            app.select_project(next, window, cx);
+                        }),
+                        cx,
+                    )
+                })),
         )
         // Settings pinned to the bottom above a hairline.
         .child(section_divider())

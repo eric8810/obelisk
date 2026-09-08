@@ -169,9 +169,9 @@ export function sleep(ms) {
 export const NAV = {
   Sessions: { x: 120, y: 164 },
   Memory: { x: 120, y: 217 },
-  Activity: { x: 120, y: 430 },
-  Recap: { x: 120, y: 485 },
-  Settings: { x: 120, y: 710 },
+  Activity: { x: 120, y: 457 },
+  Recap: { x: 120, y: 508 },
+  Settings: { x: 120, y: 735 },
 };
 
 /** First project row in the sidebar's Projects section. */

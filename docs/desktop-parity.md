@@ -32,9 +32,9 @@
 |---|---|---|---|
 | P0-1 | 时间线 | **✅ 已修复(M4.1)**:非纯追加刷新改为锚恢复——reset 前捕获顶可见 item 的稳定 key+偏移,reset 后按 key 定位 scroll_to;tail 跟随者保持钉尾;近底(<底部)自动进入 follow-tail(scroll handler 检测) | D12 像素断言:刷新 AE 0.006% |
 | P0-2 | 时间线 | **✅ 已修复(M4.1)**:ReaderState{anchor_key, offset, follow, ui_state} LRU 12 缓存;close_timeline 保存,open_session 按 key 恢复 | D12 重进断言:AE 0(完美恢复) |
-| P0-3 | Memory | 归档/恢复操作完全缺失(原版核心交互:行悬浮/详情/`D` 键三入口 + undo) | 行与详情可归档/恢复,5s undo toast 可撤销,DB `deleted_at` 正确落库 |
-| P0-4 | Memory | Active/Archived 子视图切换语义缺失:侧栏两入口行为相同、Archived 永不高亮、单页混排两节 | Active 只显示未归档、Archived 只显示已归档,侧栏高亮互斥 |
-| P0-5 | Memory | 记忆→会话溯源断链(`session id` 纯文本) | 详情"查看会话"可跳转对应时间线 |
+| P0-3 | Memory | **✅ 已修复(M4.2)**:archive/restore 走 writer lease 写 memories.deleted_at/reason;行 Archive/Restore 按钮 + D 键 + 批量(x 勾选+D)三入口;5s undo(u 键已验证;undo 条视觉受 fc-gpui focus 切换丢帧上游 bug 影响暂免视觉断言,功能由 DB 往返证明) | D13:DB 归档/恢复往返 |
+| P0-4 | Memory | **✅ 已修复(M4.2)**:memory_tab 状态;侧栏子行互斥高亮+点击切换;header Active/Archived chips 可点击切换;列表按 tab 过滤 | D13/D5:tab 高亮+列表内容断言 |
+| P0-5 | Memory | **✅ 已修复(M4.2)**:详情 View conversation 按钮 + v 键(键位超集);跳转后定位 message_start 并紫框高亮 2s;open_session_focused 修跨视图进入 | D13:跳转+高亮断言 |
 | P0-6 | Activity | 热图、活动账本(三分类/噪音过滤/跳转)整体缺失——原版 Activity 页下半区主体 | 371 格热图可点击选中切日账本;账本三分类分组渲染,行可跳转会话 |
 | P0-7 | Recap | 详情为 JSON 原文直出;五张卡牌(Cover/Path/Vibe/Workflow/Closing)与 archetype 主题未渲染 | 选定周报渲染五卡,键盘 ←/→ 翻页,archetype 调色板生效 |
 | P0-8 | Settings | 手动 Rebuild index 完全缺失 | About 区按钮触发全量重建,进行中禁用+文案,失败红字 |
@@ -42,7 +42,7 @@
 | P0-10 | 骨架 | **✅ 已修复(M4.0)**:启动探测 StatusNotifierWatcher(busctl/gdbus);无 tray 桌面关窗即退(LastWindowClosed),有 tray 保持常驻(Explicit,本机 Hyprland 实测 true,D8 不变) | 探测代码路径已验证;GNOME 实机复测待做 |
 | P0-11 | 列表 | **✅ 已修复(M4.0)**:char 级折叠匹配(folded 流 + 原 char 边界映射),单测覆盖 İ 1:N 折叠命中/ß 不命中(parity JS)/reassemble 精确性 | `highlight_segments_*` 2 个单测 |
 | P0-12 | 骨架 | 全局键盘层缺失:Cmd/Ctrl+1/2/3、`s` 排序、Esc 清选/清词均无(影响高频操作路径) | 快捷键逐条按下行为符合下表 #25-33 |
-| P0-13 | 时间线 | Memory 域键盘导航全缺(j/k/Enter/x/D/u/Cmd+Z)(与 P0-3/4 同批交付) | 键盘可完成浏览/勾选/归档/撤销全流程 |
+| P0-13 | 时间线 | **✅ 已修复(M4.2)**:j/k/上下移动光标、x 勾选、D 归档、u 撤销、Esc 清选;Enter 在 fc-gpui X11 被平台层吃(记录为已知上游问题,补 m 键等价) | D13:键盘全流程 |
 
 ---
 
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.2(批次 3)✅ 2026-09-08**:P0-3/4/5/13 修复 + 顺手 P1(anchors 展示、消息范围、memory 搜索、排序切换、tab chips 可点、时间格式化 fmt_list_time/fmt_relative)。附带修复三个深层 bug:render() 中调用 window.focus() 导致 fc-gpui 丢帧(所有"点击看似无效"的总根源)、sidebar mt_auto 吞掉 Settings 行、memory-list 缺 flex_1 使滚动容器 hitbox 塌缩。新场景 D13;desktop E2E 13/13。键位超集记录:m=打开详情、v=溯源跳转(Enter 被 X11 平台层吃)。
 
 ## 修复路线(建议批次)
 
