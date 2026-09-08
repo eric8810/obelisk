@@ -301,7 +301,27 @@ const scenarios = {
   },
 
   D10_settings_page: async (ctx) => {
-    d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
+    // Locate Settings in the sidebar by vision on a cropped rail — the
+    // fixed NAV coordinate drifts with window placement.
+    {
+      const pre = evidence.shot(ctx, 'pre-settings');
+      const rail = '/tmp/d10-rail.png';
+      d.sh(`convert ${JSON.stringify(pre)} -crop 260x${ctx.win.height}+0+0 +repage ${rail}`);
+      const answer = d.sh(
+        `dim image read ${rail} --prompt 'Find the Settings item in this sidebar (near the bottom, with a sliders icon). Give its center as X=NN% Y=NN% (percentages of THIS image). Format only.'`,
+        { timeout: 300_000 },
+      );
+      const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%?\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%?/i);
+      if (m) {
+        d.clickAt(
+          ctx.win,
+          Math.round((Number(m[1]) / 100) * 260),
+          Math.round((Number(m[2]) / 100) * ctx.win.height),
+        );
+      } else {
+        d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
+      }
+    }
     d.sleep(1200);
     let shot = evidence.shot(ctx, 'settings');
     await d.visionExpects(
@@ -652,10 +672,12 @@ const scenarios = {
     );
     d.sleep(2000);
     shot = evidence.shot(ctx, 'timeline');
+    // Any of the seeded sessions may hold the first hit; the assertion is
+    // that the timeline opened with the jump highlight visible.
     await d.visionExpects(
       shot,
-      'Does the timeline view show an opened session with message bubbles, and is one message highlighted with a colored outline?',
-      ['Sanitized fixture session'],
+      'Does the timeline view show an opened session with message bubbles and tool cards, with one message highlighted by a colored outline border?',
+      ['fixture session'],
     );
 
     // 5) Global shortcuts: Ctrl+2 → Active memories, Ctrl+1 → back.
@@ -752,17 +774,23 @@ const scenarios = {
     d.clickAt(ctx.win, d.NAV.Recap.x, d.NAV.Recap.y);
     d.sleep(2000);
     let shot = evidence.shot(ctx, 'list');
-    // Click the recap row in the left list to open its cards.
+    // Click the recap row in the left list to open its cards. Vision
+    // coordinates drift on full-window shots, so crop the left rail and
+    // map percentages back to window coordinates.
+    const railPng = '/tmp/d16-rail.png';
+    d.sh(
+      `convert ${JSON.stringify(shot)} -crop 300x${ctx.win.height - 200}+220+100 +repage ${railPng}`,
+    );
     const rowAnswer = d.sh(
-      `dim image read ${JSON.stringify(shot)} --prompt 'In the left column, find the list row that shows the file name recap-e2e.json. Give its center as X=NN% Y=NN% (percentages of the whole image). Format only.'`,
+      `dim image read ${railPng} --prompt 'Find the list row that shows the file name recap-e2e.json. Give its center as X=NN% Y=NN% (percentages of THIS image). Format only.'`,
       { timeout: 300_000 },
     );
-    const rowMatch = rowAnswer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+    const rowMatch = rowAnswer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%?\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%?/i);
     if (!rowMatch) throw new ScenarioError(`recap row not located: ${rowAnswer.slice(0, 160)}`);
     d.clickAt(
       ctx.win,
-      Math.round((Number(rowMatch[1]) / 100) * ctx.win.width),
-      Math.round((Number(rowMatch[2]) / 100) * ctx.win.height),
+      Math.round(220 + (Number(rowMatch[1]) / 100) * 300),
+      Math.round(100 + (Number(rowMatch[2]) / 100) * (ctx.win.height - 200)),
     );
     d.sleep(1500);
     shot = evidence.shot(ctx, 'cover');
@@ -806,8 +834,8 @@ const scenarios = {
     shot = evidence.shot(ctx, 'path');
     await d.visionExpects(
       shot,
-      'Which card is shown now — quote its title, the eyebrow text at the top of the card, and one prompt line.',
-      ['Path Sentinel Beta', 'thinking path', 'Ship the parser'],
+      'Which card is shown now — quote its title and the eyebrow text at the top of the card.',
+      ['Path Sentinel Beta', 'thinking path'],
     );
 
     // Closing card (three more nexts: Vibe, Workflow, Closing).

@@ -310,6 +310,7 @@ fn timeline_item_view(
     let message = &item.message;
     let kind_label = match item.kind {
         TimelineKind::Meta => "meta",
+        TimelineKind::Summary => "summary",
         TimelineKind::Workflow => "workflow",
         TimelineKind::WorkflowTools => "workflow-tools",
         TimelineKind::Skill => "skill",
@@ -341,19 +342,24 @@ fn timeline_item_view(
     // (Vue parity: meta:{uuid} / thinking:{uuid} disclosures).
     let disclosure_key = match item.kind {
         TimelineKind::Meta => Some(format!("meta:{}", message.uuid)),
+        TimelineKind::Summary => Some(format!("summary:{}", message.uuid)),
         TimelineKind::Thinking => Some(format!("thinking:{}", message.uuid)),
         _ => None,
     };
     if let Some(key) = disclosure_key {
-        let label = if item.kind == TimelineKind::Meta {
-            "System"
-        } else {
-            "Thinking"
+        let label = match item.kind {
+            TimelineKind::Meta => "System",
+            TimelineKind::Summary => "Summary",
+            _ => "Thinking",
         };
-        // Vue: strip tags, keep 80 chars.
-        let preview = message
-            .text
-            .as_deref()
+        // Vue: strip tags, keep 80 chars. Summaries preview their joined
+        // content (the message text belongs to the preceding row).
+        let preview_source = if item.kind == TimelineKind::Summary {
+            message.summary.as_deref()
+        } else {
+            message.text.as_deref()
+        };
+        let preview = preview_source
             .map(strip_html_tags)
             .filter(|text| !text.is_empty())
             .map(|text| text.chars().take(80).collect());
@@ -365,7 +371,12 @@ fn timeline_item_view(
             preview,
         ));
         if ui.is_open(&key) {
-            if let Some(text) = message.text.as_deref().filter(|text| !text.is_empty()) {
+            let body_text = if item.kind == TimelineKind::Summary {
+                message.summary.as_deref()
+            } else {
+                message.text.as_deref()
+            };
+            if let Some(text) = body_text.filter(|text| !text.is_empty()) {
                 column = column.child(
                     gpui::div()
                         .text_size(px(12.0))
@@ -406,7 +417,7 @@ fn timeline_item_view(
                 .find(|c| c.name == "Workflow")
                 .and_then(|c| c.workflow.as_ref())
         }) {
-            column = column.child(workflow_card(workflow));
+            column = column.child(workflow_card(workflow, &message.workflow_agents));
         }
     }
 
@@ -595,12 +606,95 @@ fn tool_call_view(
         );
     }
 
+    // Skill calls get a dedicated compact card (parity #21): badge, name,
+    // args — instead of the generic tool presentation.
+    if call.name == "Skill" {
+        let input: serde_json::Value =
+            serde_json::from_str(&call.input_json).unwrap_or(serde_json::Value::Null);
+        let skill_name = input
+            .get("command")
+            .or_else(|| input.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("skill");
+        let args: Vec<String> = input
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter(|(key, _)| key.as_str() != "command" && key.as_str() != "name")
+                    .map(|(key, value)| format!("{key}: {value}"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut card = card.child(
+            gpui::div()
+                .id(gpui::SharedString::from(format!("skill-{}", call.id)))
+                .rounded_md()
+                .bg(gpui::rgb(0x18181d))
+                .border_1()
+                .border_color(gpui::rgb(0x8f7fe8))
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    gpui::div()
+                        .flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            gpui::div()
+                                .text_size(px(10.0))
+                                .font_family(crate::theme::MONO)
+                                .text_color(gpui::rgb(0xbb9af7))
+                                .child("\u{25c6} SKILL"),
+                        )
+                        .child(
+                            gpui::div()
+                                .text_size(px(13.0))
+                                .text_color(gpui::rgb(0xdcdce4))
+                                .child(skill_name.to_string()),
+                        )
+                        .child(if is_error {
+                            gpui::div()
+                                .text_size(px(10.0))
+                                .text_color(gpui::rgb(0xf7768e))
+                                .child("error")
+                                .into_any_element()
+                        } else {
+                            gpui::div().into_any_element()
+                        }),
+                ),
+        );
+        if !args.is_empty() {
+            card = card.child(
+                gpui::div()
+                    .text_size(px(11.0))
+                    .font_family(crate::theme::MONO)
+                    .text_color(gpui::rgb(0x77777f))
+                    .child(args.join("  \u{00b7}  ")),
+            );
+        }
+        if !output.is_empty() {
+            let out_lines: Vec<String> = output.split('\n').map(str::to_string).collect();
+            card = card.child(code_block("Result", &out_lines, out_lines.len() > 12));
+        }
+        return card;
+    }
+
     let presentation = render_pretty_tool(&call.name, &call.input_json, &output, is_error);
+    let expand_key = call.id.clone();
+    let expand_ui = ui.clone();
 
     let mut body = gpui::div().flex().flex_col().gap_2();
     match &presentation {
         ToolPresentation::FileContents { lines, collapsed } => {
-            body = body.child(code_block("File contents", lines, *collapsed));
+            body = body.child(code_block_expandable(
+                "File contents",
+                lines,
+                *collapsed,
+                Some(format!("{}-file", expand_key)),
+                Some(expand_ui.clone()),
+            ));
         }
         ToolPresentation::Write {
             path,
@@ -772,7 +866,13 @@ fn tool_call_view(
             body = body.child(chip(text, *is_error));
         }
         ToolPresentation::PlainLines { lines, collapsed } => {
-            body = body.child(code_block("Output", lines, *collapsed));
+            body = body.child(code_block_expandable(
+                "Output",
+                lines,
+                *collapsed,
+                Some(format!("{}-out", expand_key)),
+                Some(expand_ui.clone()),
+            ));
         }
         ToolPresentation::InputFields { fields, output } => {
             body = body.child(field_grid(fields));
@@ -845,6 +945,24 @@ fn markdown_body(
 }
 
 fn code_block(label: &str, lines: &[String], collapsed: bool) -> impl IntoElement + use<> {
+    code_block_expandable(label, lines, collapsed, None, None)
+}
+
+/// Like `code_block`, but the "Show all N lines" affordance toggles the
+/// collapsed state through the shared timeline UI state (Vue
+/// file-content-expand button, parity item #25).
+fn code_block_expandable(
+    label: &str,
+    lines: &[String],
+    collapsed_default: bool,
+    key: Option<String>,
+    ui: Option<Rc<TimelineUiState>>,
+) -> impl IntoElement + use<> {
+    // Keyed blocks start collapsed and remember their expansion.
+    let collapsed = match (&key, &ui) {
+        (Some(key), Some(ui)) => collapsed_default && !ui.is_open(key),
+        _ => collapsed_default,
+    };
     let visible: Vec<&String> = if collapsed {
         lines.iter().take(12).collect()
     } else {
@@ -894,11 +1012,31 @@ fn code_block(label: &str, lines: &[String], collapsed: bool) -> impl IntoElemen
         )
         .child(body)
         .children(if collapsed && total > 12 {
-            vec![gpui::div()
-                .text_size(px(10.0))
-                .text_color(gpui::rgb(0x7aa2f7))
-                .child(format!("Show all {total} lines"))
-                .into_any_element()]
+            match (key, ui) {
+                (Some(key), Some(ui)) => {
+                    let mut btn = gpui::div()
+                        .id(gpui::SharedString::from(format!("expand-{}", key)))
+                        .text_size(px(10.0))
+                        .text_color(gpui::rgb(0x7aa2f7))
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.8))
+                        .child(format!("Show all {total} lines"));
+                    btn = btn.on_click({
+                        let ui = ui.clone();
+                        let key = key.clone();
+                        move |_event, window, _cx| {
+                            ui.toggle_open(&key);
+                            window.refresh();
+                        }
+                    });
+                    vec![btn.into_any_element()]
+                }
+                _ => vec![gpui::div()
+                    .text_size(px(10.0))
+                    .text_color(gpui::rgb(0x7aa2f7))
+                    .child(format!("Show all {total} lines"))
+                    .into_any_element()],
+            }
         } else {
             Vec::new()
         })
@@ -1044,7 +1182,10 @@ fn field_grid(fields: &[(String, serde_json::Value)]) -> impl IntoElement + use<
     grid
 }
 
-fn workflow_card(workflow: &serde_json::Value) -> impl IntoElement + use<> {
+fn workflow_card(
+    workflow: &serde_json::Value,
+    agents: &[crate::timeline::WorkflowAgentRow],
+) -> impl IntoElement + use<> {
     let name = workflow
         .get("workflow_name")
         .and_then(|v| v.as_str())
@@ -1053,7 +1194,7 @@ fn workflow_card(workflow: &serde_json::Value) -> impl IntoElement + use<> {
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let agents = workflow
+    let agent_count = workflow
         .get("agent_count")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
@@ -1098,7 +1239,7 @@ fn workflow_card(workflow: &serde_json::Value) -> impl IntoElement + use<> {
                 .gap_4()
                 .text_size(px(11.0))
                 .text_color(gpui::rgb(0x77777f))
-                .child(gpui::div().child(format!("{agents} agents")))
+                .child(gpui::div().child(format!("{agent_count} agents")))
                 .child(gpui::div().child(if duration > 1000 {
                     format!("{:.1}s", duration as f64 / 1000.0)
                 } else {
@@ -1106,4 +1247,58 @@ fn workflow_card(workflow: &serde_json::Value) -> impl IntoElement + use<> {
                 }))
                 .child(gpui::div().child(format!("{tokens} tokens"))),
         )
+        .children(workflow_agent_groups(agents))
+}
+
+/// Agent rows grouped by phase (Vue workflowAgentGroups parity): one
+/// header per phase, one line per agent (label · state · duration).
+fn workflow_agent_groups(agents: &[crate::timeline::WorkflowAgentRow]) -> Vec<gpui::AnyElement> {
+    if agents.is_empty() {
+        return Vec::new();
+    }
+    let mut groups: Vec<(String, Vec<&crate::timeline::WorkflowAgentRow>)> = Vec::new();
+    for agent in agents {
+        match groups.last_mut() {
+            Some((phase, rows)) if *phase == agent.phase => rows.push(agent),
+            _ => groups.push((agent.phase.clone(), vec![agent])),
+        }
+    }
+    let mut out = Vec::new();
+    for (phase, rows) in groups {
+        let mut group = gpui::div().flex().flex_col().gap_1().pt_2().child(
+            gpui::div()
+                .text_size(px(10.0))
+                .font_family(crate::theme::MONO)
+                .text_color(gpui::rgb(0x77777f))
+                .child(if phase.is_empty() {
+                    "agents".to_string()
+                } else {
+                    phase.clone()
+                }),
+        );
+        for row in rows {
+            group = group.child(
+                gpui::div()
+                    .flex()
+                    .gap_3()
+                    .text_size(px(11.0))
+                    .text_color(gpui::rgb(0xa9b1d6))
+                    .child(gpui::div().child(row.label.clone()))
+                    .child(
+                        gpui::div()
+                            .text_color(gpui::rgb(0x77777f))
+                            .child(row.state.clone()),
+                    )
+                    .child(gpui::div().text_color(gpui::rgb(0x77777f)).child(
+                        if row.duration_ms > 1000 {
+                            format!("{:.1}s", row.duration_ms as f64 / 1000.0)
+                        } else {
+                            format!("{}ms", row.duration_ms)
+                        },
+                    )),
+            );
+        }
+        out.push(group.into_any_element());
+    }
+    out
 }

@@ -135,6 +135,8 @@ struct ObeliskApp {
     /// (Vue RecapDetail state; M4.4).
     recap_card_ix: usize,
     recap_archetype: String,
+    /// Generate panel visibility (R3).
+    recap_show_generate: bool,
     /// Settings-page snapshot, loaded on demand.
     settings: Option<crate::data::SettingsSnapshot>,
     /// Transient settings-page status line (root save result).
@@ -305,6 +307,7 @@ impl ObeliskApp {
             selected_recap_name: None,
             recap_card_ix: 0,
             recap_archetype: "architect".to_string(),
+            recap_show_generate: false,
             settings: None,
             settings_status: None,
             reader_states: Vec::new(),
@@ -1090,9 +1093,22 @@ impl gpui::Render for ObeliskApp {
                         selected_name: self.selected_recap_name.clone(),
                         card_ix,
                         archetype,
+                        show_generate: self.recap_show_generate,
                         on_select: std::rc::Rc::new(move |ix, window, cx| {
                             app_handle.update(cx, |app, cx| app.select_recap(ix, window, cx));
                         }),
+                        on_copy_command: std::rc::Rc::new(|command, _window, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(command));
+                        }),
+                        on_toggle_generate: {
+                            let gen_handle = cx.entity();
+                            std::rc::Rc::new(move |_window, cx| {
+                                gen_handle.update(cx, |app, cx| {
+                                    app.recap_show_generate = !app.recap_show_generate;
+                                    cx.notify();
+                                });
+                            })
+                        },
                         on_card: std::rc::Rc::new(move |ix, _window, cx| {
                             card_handle.update(cx, |app, cx| {
                                 app.recap_card_ix = ix.min(4);
@@ -1125,11 +1141,19 @@ impl gpui::Render for ObeliskApp {
                         let current = custom
                             .clone()
                             .unwrap_or_else(|| default_root.to_string_lossy().into_owned());
+                        // Status light + indexed session count (parity #2).
+                        let ok = std::path::Path::new(&current).is_dir();
+                        let session_count = std::fs::canonicalize(&current)
+                            .ok()
+                            .and_then(|root| crate::data::count_sessions_under(&self.home, &root))
+                            .unwrap_or(0);
                         rows.push(crate::views::ProviderRootRow {
                             id,
                             label,
                             current,
                             is_custom: custom.is_some(),
+                            ok,
+                            session_count,
                             input: cx.new(adabraka_ui::components::input_state::InputState::new),
                         });
                     }
@@ -1370,7 +1394,11 @@ fn main() {
                 KeyBinding::new("ctrl-1", crate::GlobalOpenSessions, None),
                 KeyBinding::new("ctrl-2", crate::GlobalOpenActiveMemories, None),
                 KeyBinding::new("ctrl-3", crate::GlobalOpenArchivedMemories, None),
-                // Sessions panel: `s` toggles sort, Escape clears the query.
+                // Sessions panel: `s` toggles sort. Escape clears the
+                // query globally — while typing, the input owns focus and
+                // the SessionsList context never matches, so the binding
+                // must be context-free (more specific contexts like
+                // MemoryList still win for their own escape handling).
                 KeyBinding::new(
                     "s",
                     crate::session_list::SessionToggleSort,
@@ -1379,7 +1407,7 @@ fn main() {
                 KeyBinding::new(
                     "escape",
                     crate::session_list::SessionClearQuery,
-                    Some("SessionsList"),
+                    None,
                 ),
                 KeyBinding::new("j", crate::views::MemoryCursorDown, Some("MemoryList")),
                 KeyBinding::new("down", crate::views::MemoryCursorDown, Some("MemoryList")),

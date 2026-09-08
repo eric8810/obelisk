@@ -62,6 +62,10 @@ pub struct ProviderRootRow {
     /// The effective root right now (custom override or builtin default).
     pub current: String,
     pub is_custom: bool,
+    /// Whether the root directory exists (status light, parity #2).
+    pub ok: bool,
+    /// Sessions indexed under this root (parity #2 sessionCount).
+    pub session_count: i64,
     /// Text input holding a new custom path (empty = reset to default).
     pub input: gpui::Entity<adabraka_ui::components::input_state::InputState>,
 }
@@ -88,71 +92,90 @@ impl RenderOnce for SettingsView {
             let on_save = self.on_save_root.clone();
             let id = row.id;
             let input = row.input.clone();
-            roots = roots.child(
-                gpui::div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(crate::theme::HAIRLINE)
-                    .child(
-                        gpui::div()
-                            .flex()
-                            .items_baseline()
-                            .gap_2()
-                            .child(
-                                gpui::div()
-                                    .text_size(crate::theme::TEXT_BASE)
-                                    .text_color(crate::theme::FG)
-                                    .child(row.label.to_string()),
-                            )
-                            .child(
-                                gpui::div()
-                                    .font_family(crate::theme::MONO)
-                                    .text_size(px(11.0))
-                                    .text_color(if row.is_custom {
-                                        crate::theme::ACCENT_2
-                                    } else {
-                                        crate::theme::MUTED
-                                    })
-                                    .text_ellipsis()
-                                    .overflow_hidden()
-                                    .child(if row.is_custom {
-                                        format!("{} (custom)", row.current)
-                                    } else {
-                                        row.current.clone()
-                                    }),
-                            ),
-                    )
-                    .child(
-                        gpui::div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(gpui::div().flex_1().child(
-                                Input::new(&input).placeholder("custom path (empty = default)"),
-                            ))
-                            .child(
-                                gpui::div()
-                                    .id(gpui::SharedString::from(format!("save-root-{id}")))
-                                    .px_3()
-                                    .py_1p5()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(crate::theme::HAIRLINE_STRONG)
-                                    .text_size(crate::theme::TEXT_SM)
-                                    .text_color(crate::theme::FG_2)
-                                    .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
-                                    .cursor_pointer()
-                                    .child("Save")
-                                    .on_click(move |_event, window, cx| {
-                                        let path = input.read(cx).content().to_string();
-                                        on_save(id, path.trim(), window, cx);
-                                    }),
-                            ),
-                    ),
-            );
+            roots =
+                roots.child(
+                    gpui::div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(crate::theme::HAIRLINE)
+                        .child(
+                            gpui::div()
+                                .flex()
+                                .items_baseline()
+                                .gap_2()
+                                .child(
+                                    // Status light (parity #2): green when the
+                                    // root directory exists, dim otherwise.
+                                    gpui::div().w(px(7.0)).h(px(7.0)).rounded_full().bg(
+                                        if row.ok {
+                                            gpui::rgb(0x9ece6aff)
+                                        } else {
+                                            gpui::rgb(0x565f89ff)
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .text_size(crate::theme::TEXT_BASE)
+                                        .text_color(crate::theme::FG)
+                                        .child(row.label.to_string()),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .font_family(crate::theme::MONO)
+                                        .text_size(px(11.0))
+                                        .text_color(if row.is_custom {
+                                            crate::theme::ACCENT_2
+                                        } else {
+                                            crate::theme::MUTED
+                                        })
+                                        .text_ellipsis()
+                                        .overflow_hidden()
+                                        .child(if row.is_custom {
+                                            format!("{} (custom)", row.current)
+                                        } else {
+                                            row.current.clone()
+                                        }),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .font_family(crate::theme::MONO)
+                                        .text_size(px(11.0))
+                                        .text_color(crate::theme::MUTED)
+                                        .child(format!("{} sessions", row.session_count)),
+                                ),
+                        )
+                        .child(
+                            gpui::div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(gpui::div().flex_1().child(
+                                    Input::new(&input).placeholder("custom path (empty = default)"),
+                                ))
+                                .child(
+                                    gpui::div()
+                                        .id(gpui::SharedString::from(format!("save-root-{id}")))
+                                        .px_3()
+                                        .py_1p5()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(crate::theme::HAIRLINE_STRONG)
+                                        .text_size(crate::theme::TEXT_SM)
+                                        .text_color(crate::theme::FG_2)
+                                        .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
+                                        .cursor_pointer()
+                                        .child("Save")
+                                        .on_click(move |_event, window, cx| {
+                                            let path = input.read(cx).content().to_string();
+                                            on_save(id, path.trim(), window, cx);
+                                        }),
+                                ),
+                        ),
+                );
         }
 
         let mut schemes = gpui::div().flex().gap_2().flex_wrap();
@@ -1647,6 +1670,10 @@ fn ledger_row(
         .into_any_element()
 }
 
+/// Copy one generation command to the clipboard (R3).
+pub type RecapCopyCommandFn = Rc<dyn Fn(String, &mut gpui::Window, &mut App) + 'static>;
+/// Toggle the Generate panel (R3).
+pub type RecapGenerateFn = Rc<dyn Fn(&mut gpui::Window, &mut App) + 'static>;
 /// Fired when a recap row is selected (index into filenames).
 pub type RecapSelectFn = Rc<dyn Fn(usize, &mut gpui::Window, &mut App) + 'static>;
 /// Fired when the visible card changes (0..4).
@@ -1665,8 +1692,14 @@ pub struct RecapView {
     pub card_ix: usize,
     /// Active archetype key (persona.archetype by default; `p` cycles).
     pub archetype: String,
+    /// Whether the Generate panel is expanded (R3).
+    pub show_generate: bool,
     pub on_select: RecapSelectFn,
     pub on_card: RecapCardFn,
+    /// Copy one generation command to the clipboard (R3).
+    pub on_copy_command: RecapCopyCommandFn,
+    /// Toggle the Generate panel (R3).
+    pub on_toggle_generate: RecapGenerateFn,
 }
 
 impl RenderOnce for RecapView {
@@ -1745,6 +1778,83 @@ impl RenderOnce for RecapView {
                             .border_r_1()
                             .border_color(crate::theme::HAIRLINE)
                             .overflow_y_scroll()
+                            .child(
+                                // Generate entry (R3): four commands, each
+                                // copyable to the clipboard.
+                                gpui::div()
+                                    .p(px(16.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child({
+                                        let on_toggle = self.on_toggle_generate.clone();
+                                        let expanded = self.show_generate;
+                                        gpui::div()
+                                            .id("recap-generate-toggle")
+                                            .text_size(px(10.0))
+                                            .font_family(crate::theme::MONO)
+                                            .text_color(crate::theme::MUTED)
+                                            .cursor_pointer()
+                                            .hover(|s| s.opacity(0.8))
+                                            .child(if expanded {
+                                                "Generate a recap: (hide commands)"
+                                            } else {
+                                                "Generate a recap: show commands"
+                                            })
+                                            .on_click(move |_e, _window, cx| {
+                                                on_toggle(_window, cx);
+                                            })
+                                    })
+                                    .child(if self.show_generate {
+                                        let mut panel = gpui::div().flex().flex_col().gap_1();
+                                        for command in [
+                                            "/obelisk recap this week",
+                                            "/obelisk recap last week",
+                                            "/obelisk recap this month",
+                                            "/obelisk recap last month",
+                                        ] {
+                                            let on_copy = self.on_copy_command.clone();
+                                            panel = panel.child(
+                                                gpui::div()
+                                                    .id(gpui::SharedString::from(format!(
+                                                        "gen-{}",
+                                                        command.replace(" ", "-")
+                                                    )))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .gap_2()
+                                                    .px_2()
+                                                    .py_1()
+                                                    .rounded_sm()
+                                                    .border_1()
+                                                    .border_color(crate::theme::HAIRLINE)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(crate::theme::SURFACE))
+                                                    .child(
+                                                        gpui::div()
+                                                            .font_family(crate::theme::MONO)
+                                                            .text_size(px(10.5))
+                                                            .text_color(crate::theme::FG_2)
+                                                            .child(command.to_string()),
+                                                    )
+                                                    .child(
+                                                        gpui::div()
+                                                            .text_size(px(10.0))
+                                                            .font_family(crate::theme::MONO)
+                                                            .text_color(crate::theme::MUTED)
+                                                            .child("Copy"),
+                                                    )
+                                                    .on_click(move |_e, _window, cx| {
+                                                        on_copy(command.to_string(), _window, cx);
+                                                    }),
+                                            );
+                                        }
+                                        panel.into_any_element()
+                                    } else {
+                                        gpui::div().into_any_element()
+                                    }),
+                            )
                             .child(rows),
                     )
                     .child(

@@ -171,10 +171,10 @@
 | 17 | exec CodeAct | JS 高亮/Script 头/JSON 高亮/截断 | X | P1 |
 | 18-19 | 通用输出 | hero 卡/表格/长字段展开/数组内联 | P- | P2 细节补齐 |
 | 20 | Agent/Task 行 | 名称/描述/跳转子代理/Prompt+Result | X | **P1**(与 SubagentDetail 同批) |
-| 21 | Skill 卡 | badge/名/args/SKILL.md | M | P1 |
-| 22 | Workflow agents | phase 分组/行跳转 | M | P1 |
+| 21 | Skill 卡 | badge/名/args/SKILL.md | **P**(M4.6b) | Skill 调用专属卡:◆ SKILL badge+名+args 键值行+Result 代码块(SKILL.md 正文随 SubagentDetail 批次) |
+| 22 | Workflow agents | phase 分组/行跳转 | **P**(M4.6b) | workflow 卡附 agents 按 phase 分组(label·state·duration;行跳转随 SubagentDetail) |
 | 23 | workflow-tools | 通用卡 | P- | 等价 |
-| 24 | summary 行 | 折叠 compact markdown | X | P1(summaries 表未加载) |
+| 24 | summary 行 | 折叠 compact markdown | **P**(M4.6b) | summaries 按 uuid join 到消息,渲染 Summary 折叠卡(80 字符预览,展开 markdown) |
 | 25 | 截断全文加载 | ≥10000 字符点击加载 | **P**(M4.6) | code_block 折叠 12 行 + "Show all N lines" 可点(ui_state 按工具卡 id 记忆展开态;File contents/Output/Raw 三处) |
 | 26 | ?focus 深链 | 定位+2s 高亮 | X | P2(桌面无 URL;等价物=从 FTS/记忆跳转定位) |
 | 27 | error 呈现 | 徽标+红边+Error 标题 | P- | 已对齐 |
@@ -229,11 +229,11 @@
 | A13 | 维度 | 双方均仅按天 | P | 一致 |
 | R1 | 周报列表 | 时间轴/印章/persona/metrics/kind 过滤/年份分组 | M | **P1**:列表呈现重做 |
 | R2 | 空态 CTA | 生成按钮 | M | 随 R3 |
-| R3 | 生成入口 | 弹窗四选项+命令复制 | X | P1 |
+| R3 | 生成入口 | 弹窗四选项+命令复制 | **P**(M4.6b) | 列表 rail 顶部 Generate 面板:四条 /obelisk recap 命令,每行 Copy 写剪贴板(开关切换) |
 | R4-R9 | 详情五卡 | Cover/Path/Vibe/Workflow/Closing + 键盘翻页 | X | **P0-7** |
 | R10 | archetype 主题 | 7 调色板+过渡 | X | 随 P0-7 |
 | R11 | 导出 | Copy image/Export PNG(离屏渲染) | X | P1 |
-| R12 | 自动刷新 | recap 目录 watcher | X | P1 |
+| R12 | 自动刷新 | recap 目录 watcher | **P**(M4.6b) | daemon 心跳检查 recap 目录 mtime,变化时刷新打开中的 Recap 视图(recaps 重载) |
 | R13 | 上周对比 | 原版无 | P | 一致 |
 
 ## 域 6:Settings
@@ -243,7 +243,7 @@
 | # | 功能 | 原版行为 | 状态 | 验收标准 |
 |---|---|---|---|---|
 | 1 | 加载/实时刷新 | onIndexUpdated 重载 | P- | daemon 构建后已重载 |
-| 2 | 数据源状态卡 | 状态灯/statusText/lastIndexed/sessionCount/品牌色 | X | **P1**(与 P0-9 校验同批) |
+| 2 | 数据源状态卡 | 状态灯/statusText/lastIndexed/sessionCount/品牌色 | **P**(M4.6b) | 每 provider 行:状态灯(目录存在=绿)+indexed session 数(jsonl_path 前缀计数);lastIndexed 随 __last_build__ 展示时机优化(P2) |
 | 3 | Root 校验 | 非绝对/不存在→error 红边 | X | **P0-9** |
 | 4 | Browse/保存方式 | 目录选择对话框,选即存 | M | P1:对话框;**GPUI 手输+空=恢复默认是超集,保留** |
 | 5 | 持久化 | tmp+rename 原子写 | P- | clear_provider_root 补原子写(P2) |
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.6b(批次 7 续)✅ 2026-09-08**:P1 清扫第二片:#24 summary 行(summaries uuid join+折叠卡)、#21 Skill 专属卡、#22 Workflow agents phase 分组(workflow_agents 表装配)、Settings #2 数据源状态卡(灯+sessionCount)、R3 生成入口(四命令+剪贴板)、R12 recap 目录 watcher(心跳 mtime)。
 - **M4.6a(批次 7 起)✅ 2026-09-08**:P1 清扫第一片:#25 截断全文加载(code_block 展开按钮接 ui_state,按工具卡 id 记忆)、Settings #7 Index location+Reveal(About 区 db 路径 + xdg-open);矩阵核对:#9 内嵌 thinking 已在 M2 实现(独立 item+折叠),修正状态列。desktop E2E 17/17(D2/D10/D17 回归)。
 - **M4.5(批次 6)✅ 2026-09-08**:P0-12 修复+列表 P1 打包。全局键 Ctrl+1/2/3(扩展 /tmp/xclick 支持 ctrl- 前缀修饰键);`s` 排序/Esc 清词/quiet fold/banner 展开/branch chip/FTS 防抖 200ms(cx.spawn timer)/FTS 命中跳消息(open_session_focused 复用 memory 跳转机制);deepseek provider 补 gitBranch 解析;行时间改 fmt_list_time 分级。新场景 D17(含 jsonl 变体重写:quiet 无标题/branch feature/parity)。desktop E2E 17/17。
 - **M4.4(批次 5)✅ 2026-09-08**:P0-6/7 修复。Activity 页整体重写(热图/三 tab/统计条/账本三分类/噪音折叠/月展开);Recap 从 JSON 直出改五卡舞台(archetype 调色板入 theme,卡导航 dot/箭头)。数据层新增 load_activity_sessions/heatmap_grid/streaks/day_ledger/month_ledger + 5 单测;修复 Recap 大字 line_height(px(1.1)) 绝对行高导致字形重叠的 bug;E2E D16 导航用像素扫描定位紫箭头(vision 全图坐标漂移 ~200px 不可靠)。新场景 D15/D16;desktop E2E 16/16。

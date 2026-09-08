@@ -169,6 +169,10 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
         )
         .and_then(|meta| meta.modified())
         .ok();
+        let recap_dir = home.join(".obelisk").join("recap");
+        let mut last_recap_mtime = std::fs::metadata(&recap_dir)
+            .and_then(|meta| meta.modified())
+            .ok();
         let mut watcher = watcher;
 
         // Build on launch (the TS app's first-run inventory): a fresh
@@ -224,6 +228,28 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
                             )
                             .and_then(|meta| meta.modified())
                             .ok();
+                            // Recap directory watcher (R12): a new/removed
+                            // recap file refreshes the open Recap view.
+                            let recap_mtime = std::fs::metadata(&recap_dir)
+                                .and_then(|meta| meta.modified())
+                                .ok();
+                            if recap_mtime != last_recap_mtime {
+                                last_recap_mtime = recap_mtime;
+                                let _ = cx.update(|cx| {
+                                    let apps: Vec<gpui::WeakEntity<ObeliskApp>> = {
+                                        let registry = cx.global::<AppRegistryGlobal>();
+                                        registry.apps.clone()
+                                    };
+                                    for app in apps {
+                                        let _ = app.update(cx, |app, cx| {
+                                            if app.view == crate::views::AppView::Recap {
+                                                app.recaps = None;
+                                                cx.notify();
+                                            }
+                                        });
+                                    }
+                                });
+                            }
                             if settings_mtime != last_settings_mtime {
                                 last_settings_mtime = settings_mtime;
                                 if let Some(targets) = provider_watch_targets(&home, &cwd) {

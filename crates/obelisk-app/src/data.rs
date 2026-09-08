@@ -243,6 +243,20 @@ pub fn read_memory_file(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Sessions indexed under one provider root (Settings status cards,
+/// parity #2): counted by jsonl_path prefix.
+pub fn count_sessions_under(home: &Path, root: &Path) -> Option<i64> {
+    let conn = db::open_read_db(home).ok()?;
+    let prefix = root.to_string_lossy();
+    let pattern = format!("{prefix}%");
+    conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE jsonl_path LIKE ?1",
+        [pattern],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
 // ---- Usage stats (Vue db:getUsageStats parity) ----
 
 #[derive(Debug, Clone, Default)]
@@ -1145,6 +1159,8 @@ pub fn load_session_detail(conn: &rusqlite::Connection, session_id: &str) -> Opt
                         .unwrap_or_else(|| "claude".to_string()),
                     tool_calls: Vec::new(),
                     workflow: None,
+                    summary: None,
+                    workflow_agents: Vec::new(),
                 })
             })
             .ok()?;
@@ -1154,6 +1170,59 @@ pub fn load_session_detail(conn: &rusqlite::Connection, session_id: &str) -> Opt
     }
     if messages.is_empty() {
         return None;
+    }
+
+    // Summaries joined by message uuid (Vue message.summary).
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, content FROM summaries WHERE session_id = ?1")
+            .ok()?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                ))
+            })
+            .ok()?;
+        let summaries: std::collections::HashMap<String, String> = rows
+            .flatten()
+            .filter(|(id, content)| !id.is_empty() && !content.is_empty())
+            .collect();
+        for message in &mut messages {
+            if let Some(content) = summaries.get(&message.uuid) {
+                message.summary = Some(content.clone());
+            }
+        }
+    }
+
+    // Workflow agents joined by run id (grouped by phase in the card).
+    {
+        let mut stmt = conn
+            .prepare("SELECT agent_id, COALESCE(agent_type,''), COALESCE(description,''), COALESCE(phase,''), COALESCE(label,''), COALESCE(state,''), COALESCE(duration_ms,0), COALESCE(tokens,0), COALESCE(tool_calls,0) FROM workflow_agents WHERE session_id = ?1")
+            .ok()?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok(crate::timeline::WorkflowAgentRow {
+                    agent_id: row.get(0)?,
+                    agent_type: row.get(1)?,
+                    description: row.get(2)?,
+                    phase: row.get(3)?,
+                    label: row.get(4)?,
+                    state: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    tokens: row.get(7)?,
+                    tool_calls: row.get(8)?,
+                })
+            })
+            .ok()?;
+        let mut agents: Vec<crate::timeline::WorkflowAgentRow> = rows.flatten().collect();
+        agents.sort_by(|a, b| a.phase.cmp(&b.phase).then(a.label.cmp(&b.label)));
+        for message in &mut messages {
+            if message.workflow.is_some() {
+                message.workflow_agents = agents.clone();
+            }
+        }
     }
 
     // Tool calls keyed by message uuid.

@@ -11,6 +11,8 @@ use crate::data::TimelineToolCall;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineKind {
     Meta,
+    /// Compact summary row (summaries joined by message uuid).
+    Summary,
     Workflow,
     WorkflowTools,
     Skill,
@@ -28,6 +30,23 @@ pub struct TimelineItem {
     pub message: TimelineMessage,
     /// Workflow tools carry the non-workflow tool calls separately.
     pub tool_calls: Vec<TimelineToolCall>,
+}
+
+/// Denormalized message row for the timeline. Several fields are carried for
+/// One workflow agent row (schema.workflow_agents). Fields kept for the
+/// detail affordances (agent jump, model column) landing with SubagentDetail.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentRow {
+    pub agent_id: String,
+    pub agent_type: String,
+    pub description: String,
+    pub phase: String,
+    pub label: String,
+    pub state: String,
+    pub duration_ms: i64,
+    pub tokens: i64,
+    pub tool_calls: i64,
 }
 
 /// Denormalized message row for the timeline. Several fields are carried for
@@ -54,6 +73,10 @@ pub struct TimelineMessage {
     pub tool_calls: Vec<TimelineToolCall>,
     /// The workflow run attached to a Workflow tool call (kind=Workflow).
     pub workflow: Option<Value>,
+    /// Away/compact summary joined by uuid (rendered as a Summary row).
+    pub summary: Option<String>,
+    /// Workflow agent rows (joined by run id; grouped by phase in the card).
+    pub workflow_agents: Vec<WorkflowAgentRow>,
 }
 
 fn message_items(message: &TimelineMessage, index: usize) -> Vec<TimelineItem> {
@@ -120,6 +143,15 @@ fn message_items(message: &TimelineMessage, index: usize) -> Vec<TimelineItem> {
     }
     if message.r#type == "assistant" && message.content_type.as_deref() == Some("thinking") {
         return vec![item(TimelineKind::Thinking, Vec::new(), None)];
+    }
+    // A joined summary renders as its own compact row right after the
+    // message (Vue message.summary presentation).
+    if message.summary.is_some() && message.text.is_some() {
+        let summary_item = item(TimelineKind::Summary, Vec::new(), None);
+        return vec![item(TimelineKind::Message, Vec::new(), None), summary_item];
+    }
+    if message.summary.is_some() {
+        return vec![item(TimelineKind::Summary, Vec::new(), None)];
     }
     vec![item(TimelineKind::Message, Vec::new(), None)]
 }
