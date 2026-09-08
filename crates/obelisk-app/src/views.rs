@@ -46,6 +46,10 @@ pub struct SettingsView {
     pub on_rebuild: RebuildFn,
     /// Transient save status line.
     pub status: Option<String>,
+    /// SQLite index location (Settings #7: Index location + Reveal).
+    pub index_path: String,
+    /// Fired when "Reveal" is clicked (opens the file manager).
+    pub on_reveal: RebuildFn,
 }
 
 /// Fired when the user clicks "Rebuild index".
@@ -281,6 +285,38 @@ impl RenderOnce for SettingsView {
                             .text_size(crate::theme::TEXT_SM)
                             .text_color(crate::theme::MUTED)
                             .child(format!("Obelisk {}", env!("CARGO_PKG_VERSION"))),
+                    )
+                    .child(
+                        // Index location + Reveal (Vue Settings #7).
+                        gpui::div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                gpui::div()
+                                    .font_family(crate::theme::MONO)
+                                    .text_size(crate::theme::TEXT_XS)
+                                    .text_color(crate::theme::MUTED)
+                                    .overflow_hidden()
+                                    .child(self.index_path.clone()),
+                            )
+                            .child({
+                                let on_reveal = self.on_reveal.clone();
+                                gpui::div()
+                                    .id("reveal-index")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(crate::theme::HAIRLINE)
+                                    .text_size(crate::theme::TEXT_XS)
+                                    .font_family(crate::theme::MONO)
+                                    .text_color(crate::theme::MUTED)
+                                    .cursor_pointer()
+                                    .hover(|s| s.opacity(0.8))
+                                    .child("Reveal")
+                                    .on_click(move |_e, window, cx| on_reveal(window, cx))
+                            }),
                     )
                     .child(
                         gpui::div()

@@ -1208,6 +1208,20 @@ impl gpui::Render for ObeliskApp {
                             }
                         }),
                         status: self.settings_status.clone(),
+                        index_path: format!("{}/.obelisk/obelisk.sqlite", self.home.display()),
+                        on_reveal: {
+                            let reveal_handle = cx.entity();
+                            let home = self.home.clone();
+                            std::rc::Rc::new(move |_window, cx| {
+                                reveal_handle.update(cx, |_app, _cx| {
+                                    // Open the file manager on the index dir
+                                    // (Vue showItemInFolder; Linux path).
+                                    let dir = home.join(".obelisk");
+                                    let _ =
+                                        std::process::Command::new("xdg-open").arg(&dir).spawn();
+                                });
+                            })
+                        },
                     }
                     .into_any_element()
                 }

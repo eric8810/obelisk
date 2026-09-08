@@ -162,7 +162,7 @@
 | 5 | 字号调节 | 6 档 + toast | X | P2 |
 | 6 | 加载态/防闪烁 | Loading + is-preparing | X | P2 |
 | 7-8 | 消息卡片/空文本 | 气泡区分/(no text content) | P- | 补气泡底色与空文本占位 |
-| 9 | 内嵌 thinking | `_thinking` 折叠 | X | **P1**:data 装配 + 渲染 |
+| 9 | 内嵌 thinking | `_thinking` 折叠 | **P**(M2) | 已实现:thinking 独立 item + `thinking:{uuid}` 折叠卡(D2 断言);`_thinking` 同消息内嵌为 deepseek 之外 provider 的索引路径差异,当前数据模型无此列,留 P2 |
 | 10-11 | 独立 thinking/meta | 折叠+预览 | P- | 样式差异(thinking 多出 head) |
 | 12 | 通用工具卡 | 图标/预览/Raw 切换 | P- | SVG 图标替代 ⚙ 文本(P2) |
 | 13 | Read 查看器 | gutter 检测/Show all 可点 | P- | **修 "Show all N lines" 不可点**;gutter 检测 |
@@ -175,7 +175,7 @@
 | 22 | Workflow agents | phase 分组/行跳转 | M | P1 |
 | 23 | workflow-tools | 通用卡 | P- | 等价 |
 | 24 | summary 行 | 折叠 compact markdown | X | P1(summaries 表未加载) |
-| 25 | 截断全文加载 | ≥10000 字符点击加载 | X | P1 |
+| 25 | 截断全文加载 | ≥10000 字符点击加载 | **P**(M4.6) | code_block 折叠 12 行 + "Show all N lines" 可点(ui_state 按工具卡 id 记忆展开态;File contents/Output/Raw 三处) |
 | 26 | ?focus 深链 | 定位+2s 高亮 | X | P2(桌面无 URL;等价物=从 FTS/记忆跳转定位) |
 | 27 | error 呈现 | 徽标+红边+Error 标题 | P- | 已对齐 |
 | 49 | markdown | 代码/链接/表格/图片 | P | **P1:每帧重解析需 memoize(性能)** |
@@ -248,7 +248,7 @@
 | 4 | Browse/保存方式 | 目录选择对话框,选即存 | M | P1:对话框;**GPUI 手输+空=恢复默认是超集,保留** |
 | 5 | 持久化 | tmp+rename 原子写 | P- | clear_provider_root 补原子写(P2) |
 | 6 | 生效时机 | 即时 stop/start 服务 | M | **P0-9**:daemon targets/registry 跟随 settings |
-| 7 | Index location+Reveal | db 路径 + showItemInFolder | X | P1 |
+| 7 | Index location+Reveal | db 路径 + showItemInFolder | **P**(M4.6) | About 区显示 obelisk.sqlite 完整路径 + Reveal 按钮(xdg-open ~/.obelisk) |
 | 8 | Auto-refresh 开关 | 默认 on,即时生效 | X | P1(daemon always-on 是超集,提供开关) |
 | 9 | Editor scheme | 5 项点选即存,未知回落 | P | 已对齐 |
 | 10 | Recap 目录 | 可配置 | X | P1 |
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.6a(批次 7 起)✅ 2026-09-08**:P1 清扫第一片:#25 截断全文加载(code_block 展开按钮接 ui_state,按工具卡 id 记忆)、Settings #7 Index location+Reveal(About 区 db 路径 + xdg-open);矩阵核对:#9 内嵌 thinking 已在 M2 实现(独立 item+折叠),修正状态列。desktop E2E 17/17(D2/D10/D17 回归)。
 - **M4.5(批次 6)✅ 2026-09-08**:P0-12 修复+列表 P1 打包。全局键 Ctrl+1/2/3(扩展 /tmp/xclick 支持 ctrl- 前缀修饰键);`s` 排序/Esc 清词/quiet fold/banner 展开/branch chip/FTS 防抖 200ms(cx.spawn timer)/FTS 命中跳消息(open_session_focused 复用 memory 跳转机制);deepseek provider 补 gitBranch 解析;行时间改 fmt_list_time 分级。新场景 D17(含 jsonl 变体重写:quiet 无标题/branch feature/parity)。desktop E2E 17/17。
 - **M4.4(批次 5)✅ 2026-09-08**:P0-6/7 修复。Activity 页整体重写(热图/三 tab/统计条/账本三分类/噪音折叠/月展开);Recap 从 JSON 直出改五卡舞台(archetype 调色板入 theme,卡导航 dot/箭头)。数据层新增 load_activity_sessions/heatmap_grid/streaks/day_ledger/month_ledger + 5 单测;修复 Recap 大字 line_height(px(1.1)) 绝对行高导致字形重叠的 bug;E2E D16 导航用像素扫描定位紫箭头(vision 全图坐标漂移 ~200px 不可靠)。新场景 D15/D16;desktop E2E 16/16。
 - **M4.3(批次 4)✅ 2026-09-08**:P0-8/9 修复。daemon 热跟随(settings mtime 心跳检测 → watcher 重建 + rescan;registry 每次 build 从当前 settings 重建)、validate_provider_root 前置校验、About 版本号 + Rebuild index 按钮(状态行 DANGER 红/ACCENT_2 分色)。新场景 D14(热切换往复 + 手动重建);修复 driver 滚轮注入(xclick scroll 语义为正=上,补 scrollAt);D14 点击换算改用窗口实际尺寸(无 WM 时窗口全屏 2522x1520,非假设的 1250x749)。desktop E2E 14/14。
