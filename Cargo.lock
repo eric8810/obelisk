@@ -3899,8 +3899,9 @@ dependencies = [
 
 [[package]]
 name = "obelisk-app"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
+ "chrono",
  "fc-gpui",
  "fc-ui",
  "futures",
@@ -3911,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "obelisk-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "obelisk-core",
  "serde_json",
@@ -3919,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "obelisk-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "notify",
