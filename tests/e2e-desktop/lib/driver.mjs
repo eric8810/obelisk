@@ -67,6 +67,14 @@ export function clickAt(window, x, y) {
   sh(`DISPLAY=:0 /tmp/xclick ${rootX} ${rootY}`);
 }
 
+/** Scroll the wheel: `steps` clicks downward (xclick's own sign is
+ * positive=up, so we negate). */
+export function scrollAt(window, x, y, steps) {
+  const rootX = window.x + x;
+  const rootY = window.y + y;
+  sh(`DISPLAY=:0 /tmp/xmove ${rootX} ${rootY} && sleep 0.1 && DISPLAY=:0 /tmp/xclick scroll ${-steps}`);
+}
+
 /** Press a key by X keysym name (Page_Down, End, Escape, r, slash, …). */
 export function pressKey(keysym, { focus = true, windowId = null } = {}) {
   if (focus && windowId != null) {

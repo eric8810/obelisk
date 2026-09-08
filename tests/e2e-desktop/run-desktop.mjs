@@ -511,6 +511,98 @@ const scenarios = {
     );
   },
 
+  D14_settings_rebuild_and_validation: async (ctx) => {
+    // P0-8/P0-9 end-to-end. Root validation logic is unit-tested in Rust;
+    // here we prove: (a) a settings.json root change hot-applies through the
+    // daemon (watcher rebuild + rebuild from the NEW roots, no restart) —
+    // asserted via the indexed jsonl_path flipping between corpus copies;
+    // and (b) the manual rebuild button forces a full rebuild.
+    const db = d.dbPath(ctx.home);
+    const settingsPath = join(ctx.home, '.obelisk', 'settings.json');
+    const corpusB = `${ctx.corpus}-B`;
+    cpSync(join(ctx.corpus, 'sessions'), join(corpusB, 'sessions'), { recursive: true });
+    const readSettings = () => JSON.parse(readFileSync(settingsPath, 'utf8'));
+    const switchRoot = (root) => {
+      const settings = readSettings();
+      settings.providerRoots.deepseek = root;
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    };
+    const indexedRoot = () =>
+      d
+        .sqlite(db, "SELECT jsonl_path FROM index_state WHERE jsonl_path LIKE '/tmp/%';")
+        .split('\n')
+        .find((line) => line.includes('/session.jsonl.zstd')) || '';
+
+    // Sanity: the initial build indexed the A corpus.
+    if (!indexedRoot().startsWith(ctx.corpus)) {
+      throw new ScenarioError(`expected corpus A indexed first, got ${indexedRoot()}`);
+    }
+
+    // 1) Hot-apply to corpus B: the daemon notices the settings mtime change
+    //    on its heartbeat tick, rebuilds the watcher from the new roots and
+    //    republishes the index pointing at corpus B.
+    switchRoot(join(corpusB, 'sessions'));
+    let flipped = false;
+    let deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      flipped = indexedRoot().startsWith(corpusB);
+      if (flipped) break;
+      d.sleep(1000);
+    }
+    if (!flipped) {
+      throw new ScenarioError(`root switch to B did not hot-apply (${indexedRoot()})`);
+    }
+
+    // 2) Hot-apply BACK to corpus A proves the swap is repeatable.
+    switchRoot(join(ctx.corpus, 'sessions'));
+    let back = false;
+    deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      back = indexedRoot().startsWith(ctx.corpus) && !indexedRoot().startsWith(corpusB);
+      if (back) break;
+      d.sleep(1000);
+    }
+    if (!back) {
+      throw new ScenarioError(`root switch back to A did not hot-apply (${indexedRoot()})`);
+    }
+
+    // 3) Manual rebuild button: scroll the settings body to the About
+    //    section, locate the button by vision, click, and wait for the
+    //    __last_build__ marker to refresh.
+    const buildBefore = d.sqlite(
+      db,
+      "SELECT mtime FROM index_state WHERE jsonl_path='__last_build__';",
+    );
+    d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
+    d.sleep(1500);
+    for (let i = 0; i < 4; i++) {
+      d.scrollAt(ctx.win, 800, 400, 5);
+      d.sleep(300);
+    }
+    const shot = evidence.shot(ctx, 'about');
+    const answer = d.sh(
+      `dim image read ${JSON.stringify(shot)} --prompt 'Find the button labeled "Rebuild index". Give its center as X=NN% Y=NN% of the image (percentages). Format only.'`,
+      { timeout: 300_000 },
+    );
+    const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+    if (!m) throw new ScenarioError(`rebuild button not located: ${answer.slice(0, 160)}`);
+    d.clickAt(
+      ctx.win,
+      Math.round((Number(m[1]) / 100) * ctx.win.width),
+      Math.round((Number(m[2]) / 100) * ctx.win.height),
+    );
+    let buildAfter = buildBefore;
+    const deadline2 = Date.now() + 40_000;
+    while (Date.now() < deadline2) {
+      buildAfter = d.sqlite(db, "SELECT mtime FROM index_state WHERE jsonl_path='__last_build__';");
+      if (buildAfter !== buildBefore) break;
+      d.sleep(800);
+    }
+    if (buildAfter === buildBefore) {
+      throw new ScenarioError('manual rebuild did not refresh __last_build__');
+    }
+  },
+
   D11_live_session_follow: async (ctx) => {
     d.clickAt(ctx.win, 700, 175);
     d.sleep(1400);
@@ -586,6 +678,7 @@ const order = [
   'D11_live_session_follow',
   'D12_scroll_anchor_on_refresh',
   'D13_memory_archive_flow',
+  'D14_settings_rebuild_and_validation',
 ];
 
 const selected = only ? order.filter((n) => only.some((o) => n.startsWith(o))) : order;

@@ -724,6 +724,45 @@ impl ObeliskApp {
         cx.notify();
     }
 
+    /// Manual full rebuild (Settings > About, P0-8): a forced build under
+    /// the writer lease, with live status feedback.
+    fn request_rebuild(&mut self, cx: &mut Context<Self>) {
+        self.settings_status = Some("Rebuilding…".to_string());
+        cx.notify();
+        let home = self.home.clone();
+        cx.spawn(async move |app, cx| {
+            let build_home = home.clone();
+            let result = cx
+                .background_spawn(async move {
+                    obelisk_core::indexer::build_index(
+                        &build_home,
+                        obelisk_core::indexer::BuildIndexOptions {
+                            force: true,
+                            ignore_recent_build: true,
+                            ignore_daemon_ownership: true,
+                            provider_registry: None,
+                        },
+                    )
+                })
+                .await;
+            let _ = app.update(cx, |app: &mut Self, cx| {
+                app.settings_status = Some(if result.skip {
+                    match result.reason.as_deref() {
+                        Some("writer_busy") => {
+                            "Rebuild deferred: another writer holds the index — try again shortly"
+                                .to_string()
+                        }
+                        other => format!("Rebuild skipped: {}", other.unwrap_or("unknown")),
+                    }
+                } else {
+                    format!("Rebuilt index — {} sessions", app.data.sessions.len())
+                });
+                app.reload_from_index(cx);
+            });
+        })
+        .detach();
+    }
+
     /// Reload everything from the shared index (data + settings snapshot).
     fn reload_from_index(&mut self, cx: &mut Context<Self>) {
         let home = self.home.clone();
@@ -951,16 +990,31 @@ impl gpui::Render for ObeliskApp {
                     let save_handle = cx.entity();
                     crate::views::SettingsView {
                         editor_scheme: snapshot.editor_scheme(),
-                        on_scheme: std::rc::Rc::new(move |scheme, window, cx| {
-                            app_handle
-                                .update(cx, |app, cx| app.select_editor_scheme(scheme, window, cx));
-                        }),
+                        on_scheme: {
+                            let scheme_handle = app_handle.clone();
+                            std::rc::Rc::new(move |scheme, window, cx| {
+                                scheme_handle.update(cx, |app, cx| {
+                                    app.select_editor_scheme(scheme, window, cx)
+                                });
+                            })
+                        },
+                        on_rebuild: {
+                            let rebuild_handle = app_handle.clone();
+                            std::rc::Rc::new(move |_window, cx| {
+                                rebuild_handle.update(cx, |app, cx| app.request_rebuild(cx));
+                            })
+                        },
                         roots: rows,
                         on_save_root: std::rc::Rc::new(move |id, path, _window, cx| {
+                            // Validate before persisting (P0-9): a bad path
+                            // gets an immediate red status instead of
+                            // silently neutering the provider.
                             let result = if path.is_empty() {
                                 clear_provider_root(&save_home, id)
                             } else {
-                                crate::data::save_provider_root(&save_home, id, path)
+                                crate::data::validate_provider_root(&save_home, path).and_then(
+                                    |()| crate::data::save_provider_root(&save_home, id, path),
+                                )
                             };
                             match result {
                                 Ok(()) => {

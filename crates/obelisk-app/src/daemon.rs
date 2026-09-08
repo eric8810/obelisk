@@ -140,9 +140,9 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
     let Some(targets) = provider_watch_targets(&home, &cwd) else {
         return;
     };
-    let Some(registry) = build_registry(&home, &cwd) else {
+    if build_registry(&home, &cwd).is_none() {
         return;
-    };
+    }
 
     let (tx, rx) = mpsc::unbounded::<WatchInvalidation>();
     let watcher = Arc::new(AdaptiveWatcher::new(AdaptiveWatcherOptions {
@@ -158,11 +158,18 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
 
     let task = cx.spawn(async move |cx| {
         let mut rx = rx;
+        let mut invalidations: Option<mpsc::UnboundedReceiver<WatchInvalidation>> = None;
         let mut pending_paths: Vec<PathBuf> = Vec::new();
         let mut pending_rescans: Vec<PathBuf> = Vec::new();
         let mut first_event: Option<Instant> = None;
         let mut last_build;
         let mut next_heartbeat = Instant::now();
+        let mut last_settings_mtime = std::fs::metadata(
+            obelisk_core::provider_settings::settings_path(&home),
+        )
+        .and_then(|meta| meta.modified())
+        .ok();
+        let mut watcher = watcher;
 
         // Build on launch (the TS app's first-run inventory): a fresh
         // install has no index and no watch events to react to, so without
@@ -170,10 +177,14 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
         // Incremental semantics: cold start does the full work, an already
         // fresh index skips in milliseconds.
         eprintln!("obelisk daemon: initial index build");
-        run_build(cx, &home, &cwd, &watcher, &registry, false, false).await;
+        run_build(cx, &home, &cwd, &watcher, false, false).await;
         last_build = Instant::now();
 
         loop {
+            // A watcher swap (settings change) replaces the event channel.
+            if let Some(new_rx) = invalidations.take() {
+                rx = new_rx;
+            }
             if first_event.is_none() {
                 // Idle: wait for the next invalidation or the earlier of the
                 // reconcile and heartbeat deadlines. The first heartbeat
@@ -205,11 +216,45 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
                             })
                             .await;
                             next_heartbeat = now + HEARTBEAT;
+                            // Provider-root edits must not need a restart:
+                            // when settings.json changes, re-resolve the
+                            // watch targets and swap the watcher (P0-9).
+                            let settings_mtime = std::fs::metadata(
+                                obelisk_core::provider_settings::settings_path(&home),
+                            )
+                            .and_then(|meta| meta.modified())
+                            .ok();
+                            if settings_mtime != last_settings_mtime {
+                                last_settings_mtime = settings_mtime;
+                                if let Some(targets) = provider_watch_targets(&home, &cwd) {
+                                    eprintln!(
+                                        "obelisk daemon: settings changed — rebuilding watcher ({} targets)",
+                                        targets.len()
+                                    );
+                                    let (tx, new_rx) =
+                                        mpsc::unbounded::<WatchInvalidation>();
+                                    watcher = Arc::new(AdaptiveWatcher::new(
+                                        AdaptiveWatcherOptions {
+                                            targets,
+                                            on_invalidate: Box::new(move |invalidation| {
+                                                let _ = tx.unbounded_send(invalidation);
+                                            }),
+                                            should_promote: Some(Box::new(is_transcript_path)),
+                                            ..Default::default()
+                                        },
+                                    ));
+                                    // Seed the loop with a full rescan so the
+                                    // new roots index immediately.
+                                    pending_rescans.push(home.clone());
+                                    first_event.get_or_insert(now);
+                                    invalidations = Some(new_rx);
+                                }
+                            }
                         }
                         if now >= reconcile_at {
                             // Periodic full reconcile build (TS RECONCILE_MS):
                             // bounds staleness from silently dropped events.
-                            run_build(cx, &home, &cwd, &watcher, &registry, true, true).await;
+                            run_build(cx, &home, &cwd, &watcher, true, true).await;
                             last_build = Instant::now();
                         }
                         continue;
@@ -271,7 +316,7 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
                     "obelisk daemon: incremental build (full={full}, {} changed paths)",
                     changed.len()
                 );
-                run_build(cx, &home, &cwd, &watcher, &registry, full, true).await;
+                run_build(cx, &home, &cwd, &watcher, full, true).await;
                 last_build = Instant::now();
             }
         }
@@ -302,15 +347,37 @@ async fn run_build(
     home: &std::path::Path,
     cwd: &std::path::Path,
     watcher: &Arc<AdaptiveWatcher>,
-    registry: &Arc<obelisk_core::providers::types::ProviderRegistry>,
     full: bool,
     ignore_recent: bool,
 ) {
     let build_home = home.to_path_buf();
-    let build_registry = registry.clone();
+    let build_cwd = cwd.to_path_buf();
     let result = cx
         .background_executor()
         .spawn(async move {
+            // The registry is rebuilt per build from the CURRENT settings —
+            // provider-root edits take effect on the next build without an
+            // app restart (P0-9).
+            let registry = build_registry(&build_home, &build_cwd).unwrap_or_else(|| {
+                let persisted =
+                    match obelisk_core::provider_settings::read_persisted_provider_settings(
+                        &build_home,
+                    ) {
+                        obelisk_core::provider_settings::SettingsRead::Ok(value) => value,
+                        obelisk_core::provider_settings::SettingsRead::Failed(_) => {
+                            serde_json::json!({})
+                        }
+                    };
+                Arc::new(
+                    obelisk_core::provider_settings::create_configured_builtin_provider_runtime(
+                        &build_home,
+                        &build_cwd,
+                        &persisted,
+                        &Default::default(),
+                    )
+                    .registry,
+                )
+            });
             build_index(
                 &build_home,
                 BuildIndexOptions {
@@ -319,7 +386,7 @@ async fn run_build(
                     // This daemon owns the heartbeat marker; builds must
                     // not be suppressed by our own liveness row.
                     ignore_daemon_ownership: true,
-                    provider_registry: Some(build_registry),
+                    provider_registry: Some(registry),
                 },
             )
         })

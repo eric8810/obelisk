@@ -393,6 +393,24 @@ pub fn read_recap(home: &Path, filename: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// Validate a provider root before saving (P0-9): absolute path or `~`,
+/// and the directory must exist. Returns a user-facing error otherwise.
+pub fn validate_provider_root(home: &Path, path: &str) -> Result<(), String> {
+    let path = path.trim();
+    if !(path.starts_with('/') || path.starts_with('~')) {
+        return Err("Path must be absolute (start with / or ~)".to_string());
+    }
+    let expanded = if let Some(rest) = path.strip_prefix('~') {
+        home.join(rest.trim_start_matches('/'))
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    if !expanded.is_dir() {
+        return Err(format!("Folder not found: {}", expanded.display()));
+    }
+    Ok(())
+}
+
 /// Persist one provider root override (`providerRoots[id]` in settings.json).
 /// Plain-file write like the editor scheme: it never touches the SQLite
 /// index, so it stays legal regardless of which process owns DB writes.
@@ -830,4 +848,24 @@ pub fn load_session_detail(conn: &rusqlite::Connection, session_id: &str) -> Opt
         session_source,
         messages,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_provider_root;
+
+    #[test]
+    fn provider_root_validation() {
+        let home = std::path::Path::new("/home/tester");
+        // Relative paths are rejected outright.
+        assert!(validate_provider_root(home, "relative/path").is_err());
+        assert!(validate_provider_root(home, "").is_err());
+        // Absolute but missing directories are rejected with "not found".
+        let err = validate_provider_root(home, "/definitely/not/a/dir").unwrap_err();
+        assert!(err.contains("not found") || err.contains("Folder"), "{err}");
+        // Real directories pass (both plain-absolute and ~-expanded).
+        assert!(validate_provider_root(home, "/tmp").is_ok());
+        let err = validate_provider_root(home, "/definitely/not/a/dir");
+        assert!(err.is_err());
+    }
 }

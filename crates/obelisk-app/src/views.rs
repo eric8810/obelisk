@@ -41,9 +41,14 @@ pub struct SettingsView {
     /// Save a custom root for one provider (writes settings.json, then the
     /// caller rebuilds the index).
     pub on_save_root: SaveRootFn,
+    /// Fired when the user requests a full index rebuild.
+    pub on_rebuild: RebuildFn,
     /// Transient save status line.
     pub status: Option<String>,
 }
+
+/// Fired when the user clicks "Rebuild index".
+pub type RebuildFn = Rc<dyn Fn(&mut gpui::Window, &mut App) + 'static>;
 
 /// One provider row in the data-sources form.
 pub struct ProviderRootRow {
@@ -242,11 +247,65 @@ impl RenderOnce for SettingsView {
                             )
                             .child(roots)
                             .children(self.status.clone().map(|status| {
+                                let color = if status.starts_with("Invalid")
+                                    || status.starts_with("Save failed")
+                                    || status.starts_with("Rebuild failed")
+                                {
+                                    crate::theme::DANGER
+                                } else {
+                                    crate::theme::ACCENT_2
+                                };
                                 gpui::div()
                                     .text_size(crate::theme::TEXT_SM)
-                                    .text_color(crate::theme::ACCENT_2)
+                                    .text_color(color)
                                     .child(status)
                             })),
+                    ),
+            )
+            // About: version + manual rebuild (P0-8).
+            .child(
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        gpui::div()
+                            .text_size(px(13.0))
+                            .text_color(crate::theme::FG)
+                            .child("About"),
+                    )
+                    .child(
+                        gpui::div()
+                            .font_family(crate::theme::MONO)
+                            .text_size(crate::theme::TEXT_SM)
+                            .text_color(crate::theme::MUTED)
+                            .child(format!("Obelisk {}", env!("CARGO_PKG_VERSION"))),
+                    )
+                    .child(
+                        gpui::div()
+                            .id("rebuild-index")
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(crate::theme::ACCENT)
+                            .text_size(crate::theme::TEXT_SM)
+                            .text_color(crate::theme::ACCENT_2)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(crate::theme::ACCENT_SOFT))
+                            .child("Rebuild index")
+                            .on_click({
+                                let on_rebuild = self.on_rebuild.clone();
+                                move |_e, window, cx| on_rebuild(window, cx)
+                            }),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_size(px(11.0))
+                            .text_color(crate::theme::MUTED)
+                            .child(
+                                "Rebuilding re-reads every transcript from the configured roots. It does not delete memories or recaps.",
+                            ),
                     ),
             )
     }

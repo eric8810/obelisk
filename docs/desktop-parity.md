@@ -37,8 +37,8 @@
 | P0-5 | Memory | **✅ 已修复(M4.2)**:详情 View conversation 按钮 + v 键(键位超集);跳转后定位 message_start 并紫框高亮 2s;open_session_focused 修跨视图进入 | D13:跳转+高亮断言 |
 | P0-6 | Activity | 热图、活动账本(三分类/噪音过滤/跳转)整体缺失——原版 Activity 页下半区主体 | 371 格热图可点击选中切日账本;账本三分类分组渲染,行可跳转会话 |
 | P0-7 | Recap | 详情为 JSON 原文直出;五张卡牌(Cover/Path/Vibe/Workflow/Closing)与 archetype 主题未渲染 | 选定周报渲染五卡,键盘 ←/→ 翻页,archetype 调色板生效 |
-| P0-8 | Settings | 手动 Rebuild index 完全缺失 | About 区按钮触发全量重建,进行中禁用+文案,失败红字 |
-| P0-9 | Settings | root 保存无校验/反馈:坏路径静默失效;daemon watcher/registry 不跟随新配置(需重启但状态行宣称"已重建") | 非法路径即时红字提示;保存后 daemon 监听新根(不重启) |
+| P0-8 | Settings | **✅ 已修复(M4.3)**:About 区显示版本号 + Rebuild index 按钮(ACCENT 描边);request_rebuild 走 writer lease 全量重建,writer_busy 时状态行提示 deferred,成功 "Rebuilt index — N sessions" 并 reload | D14:__last_build__ 刷新断言 |
+| P0-9 | Settings | **✅ 已修复(M4.3)**:validate_provider_root 单测覆盖(相对路径/不存在目录拒收,存在目录与 ~ 展开);daemon 每次心跳检查 settings.json mtime,变化即从当前 settings 重建 AdaptiveWatcher 并全量 rescan;run_build 每次从当前 settings 重建 registry(root 切换不重启生效) | D14:settings.json root 往复热切换(A↔B)后 index_state 路径翻转断言;Rust 单测 8 项 |
 | P0-10 | 骨架 | **✅ 已修复(M4.0)**:启动探测 StatusNotifierWatcher(busctl/gdbus);无 tray 桌面关窗即退(LastWindowClosed),有 tray 保持常驻(Explicit,本机 Hyprland 实测 true,D8 不变) | 探测代码路径已验证;GNOME 实机复测待做 |
 | P0-11 | 列表 | **✅ 已修复(M4.0)**:char 级折叠匹配(folded 流 + 原 char 边界映射),单测覆盖 İ 1:N 折叠命中/ß 不命中(parity JS)/reassemble 精确性 | `highlight_segments_*` 2 个单测 |
 | P0-12 | 骨架 | 全局键盘层缺失:Cmd/Ctrl+1/2/3、`s` 排序、Esc 清选/清词均无(影响高频操作路径) | 快捷键逐条按下行为符合下表 #25-33 |
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.3(批次 4)✅ 2026-09-08**:P0-8/9 修复。daemon 热跟随(settings mtime 心跳检测 → watcher 重建 + rescan;registry 每次 build 从当前 settings 重建)、validate_provider_root 前置校验、About 版本号 + Rebuild index 按钮(状态行 DANGER 红/ACCENT_2 分色)。新场景 D14(热切换往复 + 手动重建);修复 driver 滚轮注入(xclick scroll 语义为正=上,补 scrollAt);D14 点击换算改用窗口实际尺寸(无 WM 时窗口全屏 2522x1520,非假设的 1250x749)。desktop E2E 14/14。
 - **M4.2(批次 3)✅ 2026-09-08**:P0-3/4/5/13 修复 + 顺手 P1(anchors 展示、消息范围、memory 搜索、排序切换、tab chips 可点、时间格式化 fmt_list_time/fmt_relative)。附带修复三个深层 bug:render() 中调用 window.focus() 导致 fc-gpui 丢帧(所有"点击看似无效"的总根源)、sidebar mt_auto 吞掉 Settings 行、memory-list 缺 flex_1 使滚动容器 hitbox 塌缩。新场景 D13;desktop E2E 13/13。键位超集记录:m=打开详情、v=溯源跳转(Enter 被 X11 平台层吃)。
 
 ## 修复路线(建议批次)
