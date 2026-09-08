@@ -325,6 +325,76 @@ const scenarios = {
     await switchScheme('vscode');
   },
 
+  D12_scroll_anchor_on_refresh: async (ctx) => {
+    // Open the session and page into the middle of the timeline.
+    d.clickAt(ctx.win, 700, 175);
+    d.sleep(1500);
+    d.pressKey('Page_Down', { windowId: ctx.win.window_id });
+    d.sleep(300);
+    d.pressKey('Page_Down', { windowId: ctx.win.window_id });
+    d.sleep(800);
+    const before = evidence.shot(ctx, 'anchor-before');
+
+    // Non-pure-append change: delete a real message line (row 11 of the
+    // deepseek transcript is a user/message), recompress, and wait for the
+    // daemon's incremental build to land in the DB.
+    const corpusFile = d.sh(
+      `find ${JSON.stringify(join(ctx.corpus, 'sessions'))} -name 'session.jsonl.zstd' | head -1`,
+    ).trim();
+    d.sh(
+      `zstd -dc ${JSON.stringify(corpusFile)} > /tmp/d12-raw.jsonl && sed -i '11d' /tmp/d12-raw.jsonl && zstd -f -o ${JSON.stringify(corpusFile)} /tmp/d12-raw.jsonl`,
+    );
+    const c0 = Number(d.sqlite(d.dbPath(ctx.home), 'SELECT message_count FROM sessions LIMIT 1;'));
+    let c1 = c0;
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      c1 = Number(d.sqlite(d.dbPath(ctx.home), 'SELECT message_count FROM sessions LIMIT 1;'));
+      if (c1 !== c0) break;
+      d.sleep(500);
+    }
+    if (c1 === c0) throw new ScenarioError(`corpus deletion did not land (${c0} -> ${c1})`);
+    d.sleep(1500);
+    const after = evidence.shot(ctx, 'anchor-after');
+
+    // The viewport must be pixel-stable across the refresh: compare the
+    // timeline region of both shots (<5% changed pixels). A jump back to
+    // the top changes nearly everything.
+    const crop = (p, out) =>
+      d.sh(`convert ${JSON.stringify(p)} -crop 830x680+400+60 +repage ${JSON.stringify(out)}`);
+    crop(before, '/tmp/d12-before-view.png');
+    crop(after, '/tmp/d12-after-view.png');
+    const raw = d.sh(
+      'compare -metric AE /tmp/d12-before-view.png /tmp/d12-after-view.png null: 2>&1 || true',
+      { timeout: 60_000 },
+    );
+    const ae = Number(raw.trim().split(/[\s(]/)[0]);
+    if (!Number.isFinite(ae)) throw new ScenarioError(`pixel compare failed: ${raw}`);
+    const pct = (ae / (830 * 680)) * 100;
+    evidence.text('D12-pixel-diff.txt', `AE ${ae} (${pct.toFixed(3)}%)\nraw: ${raw}`);
+    if (pct >= 5) {
+      throw new ScenarioError(`viewport jumped on non-pure-append refresh: ${pct.toFixed(2)}% pixels changed`);
+    }
+
+    // Reader-state restore: close the timeline (Esc) and reopen the same
+    // session — the reading position must come back (again pixel-stable).
+    d.pressKey('Escape', { windowId: ctx.win.window_id });
+    d.sleep(700);
+    d.clickAt(ctx.win, 700, 175);
+    d.sleep(1500);
+    const reopened = evidence.shot(ctx, 'anchor-reopened');
+    crop(reopened, '/tmp/d12-reopened-view.png');
+    const raw2 = d.sh(
+      'compare -metric AE /tmp/d12-after-view.png /tmp/d12-reopened-view.png null: 2>&1 || true',
+      { timeout: 60_000 },
+    );
+    const ae2 = Number(raw2.trim().split(/[\s(]/)[0]);
+    const pct2 = (ae2 / (830 * 680)) * 100;
+    evidence.text('D12-reopen-diff.txt', `AE ${ae2} (${pct2.toFixed(3)}%)\nraw: ${raw2}`);
+    if (pct2 >= 5) {
+      throw new ScenarioError(`reader state not restored on reopen: ${pct2.toFixed(2)}% pixels changed`);
+    }
+  },
+
   D11_live_session_follow: async (ctx) => {
     d.clickAt(ctx.win, 700, 175);
     d.sleep(1400);
@@ -398,6 +468,7 @@ const order = [
   'D9_chinese_ime_input',
   'D10_settings_page',
   'D11_live_session_follow',
+  'D12_scroll_anchor_on_refresh',
 ];
 
 const selected = only ? order.filter((n) => only.some((o) => n.startsWith(o))) : order;

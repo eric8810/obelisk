@@ -27,6 +27,7 @@
 | D9 | 中文 IME 输入 | 搜索框注入 "会话 历史" → 框内文本与过滤/FTS 行为一致 | 截图 | ✅ |
 | D10 | 设置页 | Settings:editorScheme 五选一;点击写入 settings.json 并高亮切换;provider roots 只读展示 | 截图 + settings.json | ✅ |
 | D11 | live 会话更新(follow) | 时间线打开于 End(follow-tail)→ 语料追加 → daemon build → 尾部自动出现新消息且钉底 | 截图 + DB | ✅ |
+| D12 | 滚动锚保位（M4.1） | 打开会话翻页到中部→删除语料一条消息（非纯追加）→daemon 增量刷新后时间线视口像素级保位（<5% 变化）；关闭重进恢复阅读位置与披露状态 | F8 | all | 像素 diff | ✅ |
 
 ## 稳定性纪律(与 CLI 目录一致)
 

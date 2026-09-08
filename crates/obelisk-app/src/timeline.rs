@@ -21,9 +21,8 @@ pub enum TimelineKind {
 #[derive(Debug, Clone)]
 pub struct TimelineItem {
     pub kind: TimelineKind,
-    /// Stable per-item identity, kept for the branch-disclosure and
-    /// follow-tail work later in M2.3.
-    #[allow(dead_code)]
+    /// Stable per-item identity: the reader-anchor restore (refreshes and
+    /// session re-entry) re-finds the top visible item by this key.
     pub key: String,
     pub message_uuid: String,
     pub message: TimelineMessage,

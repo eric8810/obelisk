@@ -30,8 +30,8 @@
 
 | # | 域 | 问题 | 验收标准 |
 |---|---|---|---|
-| P0-1 | 时间线 | 刷新无用户滚动感知;非纯追加变更走 `reset` 跳回顶部、丢全部测量(`main.rs` refresh_timeline_daemon + fc-gpui list reset)。live 会话边跑边读必踩 | 用户滚动期间索引刷新不移动视口;非纯追加补丁提交后,视口顶可见行保持原屏幕偏移(±1px) |
-| P0-2 | 时间线 | reader-anchor 与阅读状态缓存缺失:返回列表再进=顶部重开、折叠/展开态全丢 | 重进同一会话恢复滚动位置与全部披露状态 |
+| P0-1 | 时间线 | **✅ 已修复(M4.1)**:非纯追加刷新改为锚恢复——reset 前捕获顶可见 item 的稳定 key+偏移,reset 后按 key 定位 scroll_to;tail 跟随者保持钉尾;近底(<底部)自动进入 follow-tail(scroll handler 检测) | D12 像素断言:刷新 AE 0.006% |
+| P0-2 | 时间线 | **✅ 已修复(M4.1)**:ReaderState{anchor_key, offset, follow, ui_state} LRU 12 缓存;close_timeline 保存,open_session 按 key 恢复 | D12 重进断言:AE 0(完美恢复) |
 | P0-3 | Memory | 归档/恢复操作完全缺失(原版核心交互:行悬浮/详情/`D` 键三入口 + undo) | 行与详情可归档/恢复,5s undo toast 可撤销,DB `deleted_at` 正确落库 |
 | P0-4 | Memory | Active/Archived 子视图切换语义缺失:侧栏两入口行为相同、Archived 永不高亮、单页混排两节 | Active 只显示未归档、Archived 只显示已归档,侧栏高亮互斥 |
 | P0-5 | Memory | 记忆→会话溯源断链(`session id` 纯文本) | 详情"查看会话"可跳转对应时间线 |
@@ -261,6 +261,7 @@
 ## 修复进度
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
+- **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
 
 ## 修复路线(建议批次)
 

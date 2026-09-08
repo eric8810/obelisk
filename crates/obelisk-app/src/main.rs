@@ -125,6 +125,8 @@ struct ObeliskApp {
     settings: Option<crate::data::SettingsSnapshot>,
     /// Transient settings-page status line (root save result).
     settings_status: Option<String>,
+    /// Reading-position cache for recently viewed sessions (LRU 12).
+    reader_states: Vec<(String, ReaderState)>,
     /// Session-list search box state (Vue: `/` focuses, filters by
     /// title/project/branch client-side). Observed → `search_query`.
     search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
@@ -147,6 +149,48 @@ struct TimelineScreenState {
     focus: gpui::FocusHandle,
     /// Collapsible-card disclosure flags, retained across refreshes.
     ui_state: std::rc::Rc<timeline_view::TimelineUiState>,
+}
+
+/// Per-session reading position, restored when the session is reopened
+/// (parity: the Vue app's `session-reader-state` LRU).
+struct ReaderState {
+    /// Stable key of the top visible timeline item at close time.
+    anchor_key: String,
+    /// Pixel offset within that item.
+    offset_in_item: gpui::Pixels,
+    /// Whether the reader was following the tail.
+    following_tail: bool,
+    /// Disclosure flags for collapsible cards.
+    ui_state: std::rc::Rc<timeline_view::TimelineUiState>,
+}
+
+/// Reader-state LRU size (parity: `session-reader-state` keeps 12 sessions).
+const READER_STATE_CACHE: usize = 12;
+
+fn remember_reader_state(
+    cache: &mut Vec<(String, ReaderState)>,
+    session_id: &str,
+    state: ReaderState,
+) {
+    cache.retain(|(id, _)| id != session_id);
+    cache.insert(0, (session_id.to_string(), state));
+    cache.truncate(READER_STATE_CACHE);
+}
+
+/// Resolve a reader anchor to a list offset against the current items:
+/// the anchor item is re-found by stable key; `None` keeps the list at top.
+fn anchor_offset(
+    items: &[timeline::TimelineItem],
+    anchor_key: &str,
+    offset_in_item: gpui::Pixels,
+) -> Option<gpui::ListOffset> {
+    items
+        .iter()
+        .position(|item| item.key == anchor_key)
+        .map(|item_ix| gpui::ListOffset {
+            item_ix,
+            offset_in_item,
+        })
 }
 
 impl ObeliskApp {
@@ -194,6 +238,7 @@ impl ObeliskApp {
             selected_recap_name: None,
             settings: None,
             settings_status: None,
+            reader_states: Vec::new(),
             search_state,
             search_query: String::new(),
             search_hits: Vec::new(),
@@ -291,6 +336,46 @@ impl ObeliskApp {
             let focus = cx.focus_handle();
             window.focus(&focus);
             let list_state = gpui::ListState::new(items.len(), gpui::ListAlignment::Top, px(600.0));
+            // Near-bottom auto-arm (parity: the Vue app enters follow-tail
+            // within 50px of the end). Upward input stops following inside
+            // fc-gpui's list itself.
+            let follow_list = list_state.clone();
+            list_state.set_scroll_handler(move |event, _window, _cx| {
+                if !event.is_following_tail {
+                    if follow_list.is_scrolled_to_end() == Some(true) {
+                        follow_list.set_follow_tail(true);
+                    }
+                }
+            });
+            // Restore the reading position for a revisited session
+            // (scroll anchor + disclosures).
+            let cached = self
+                .reader_states
+                .iter()
+                .position(|(id, _)| id == &session_id)
+                .map(|ix| self.reader_states.remove(ix));
+            if let Some((_, reader)) = cached {
+                if let Some(offset) =
+                    anchor_offset(&items, &reader.anchor_key, reader.offset_in_item)
+                {
+                    list_state.scroll_to(offset);
+                }
+                if reader.following_tail {
+                    list_state.set_follow_tail(true);
+                    list_state.scroll_to_end();
+                }
+                self.timeline = Some(TimelineScreenState {
+                    session_id,
+                    title: detail.session_title,
+                    source: detail.session_source,
+                    items,
+                    list_state,
+                    focus,
+                    ui_state: reader.ui_state,
+                });
+                cx.notify();
+                return;
+            }
             self.timeline = Some(TimelineScreenState {
                 session_id,
                 title: detail.session_title,
@@ -348,7 +433,27 @@ impl ObeliskApp {
                 .list_state
                 .splice(old_len..old_len, items.len() - old_len);
         } else {
+            // The wholesale path used to `reset` — which drops every
+            // measurement and parks the viewport at the top, so reading a
+            // live session felt like a jump-cut on every non-append change
+            // (retract, edit, summary insertion). Parity with the Vue
+            // settle behavior: capture the top visible item before the
+            // reset, re-find it by stable key afterwards, and restore the
+            // exact list offset; a tail-follower stays pinned to the tail.
+            let anchor = screen.list_state.logical_scroll_top();
+            let anchor_key = screen
+                .items
+                .get(anchor.item_ix)
+                .map(|item| item.key.clone())
+                .unwrap_or_default();
+            let was_following = screen.list_state.is_following_tail();
             screen.list_state.reset(items.len());
+            if was_following {
+                screen.list_state.set_follow_tail(true);
+                screen.list_state.scroll_to_end();
+            } else if let Some(offset) = anchor_offset(&items, &anchor_key, anchor.offset_in_item) {
+                screen.list_state.scroll_to(offset);
+            }
         }
         screen.items = items;
         screen.title = detail.session_title;
@@ -357,7 +462,24 @@ impl ObeliskApp {
     }
 
     fn close_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.timeline = None;
+        if let Some(screen) = self.timeline.take() {
+            let anchor = screen.list_state.logical_scroll_top();
+            let anchor_key = screen
+                .items
+                .get(anchor.item_ix)
+                .map(|item| item.key.clone())
+                .unwrap_or_default();
+            remember_reader_state(
+                &mut self.reader_states,
+                &screen.session_id,
+                ReaderState {
+                    anchor_key,
+                    offset_in_item: anchor.offset_in_item,
+                    following_tail: screen.list_state.is_following_tail(),
+                    ui_state: screen.ui_state,
+                },
+            );
+        }
         window.focus(&self.sessions_focus);
         cx.notify();
     }
