@@ -39,6 +39,9 @@ pub struct AppData {
     /// Whether an index exists and has completed at least one build —
     /// drives the "building vs. genuinely empty" empty-state message.
     pub index_ready: bool,
+    /// Project display labels (Vue formatProjectLabel): shortest
+    /// project_path basename per slug, else the trimmed slug.
+    pub project_labels: std::collections::HashMap<String, String>,
 }
 
 impl AppData {
@@ -52,6 +55,7 @@ impl AppData {
         let projects = read_projects(&conn);
         let sessions = read_sessions(&conn);
         let (memory_active, memory_archived) = memory_counts(&conn);
+        let project_labels = project_label_map(&conn);
         let index_ready = conn
             .query_row(
                 "SELECT COUNT(*) FROM index_state WHERE jsonl_path = '__last_build__'",
@@ -66,6 +70,7 @@ impl AppData {
             memory_active,
             memory_archived,
             index_ready,
+            project_labels,
         }
     }
 
@@ -807,8 +812,68 @@ pub fn load_stats(home: &Path) -> OverviewStats {
 // ---- Recap (Vue recap:list / recap:read parity) ----
 
 /// List weekly-recap JSON files from `~/.obelisk/recap`, newest first.
+/// The recap directory (Vue settings.recapDir; Settings #10): a custom
+/// absolute path from settings.json, defaulting to ~/.obelisk/recap.
+pub fn recap_dir(home: &Path) -> std::path::PathBuf {
+    let configured = match obelisk_core::provider_settings::read_persisted_provider_settings(home) {
+        obelisk_core::provider_settings::SettingsRead::Ok(value) => value,
+        _ => serde_json::json!({}),
+    };
+    let configured = configured
+        .get("recapDir")
+        .and_then(|dir| dir.as_str())
+        .map(str::to_string)
+        .filter(|dir| dir.starts_with('/') || dir.starts_with('~'));
+    match configured {
+        Some(dir) if dir.starts_with('~') => expand_home(home, &dir),
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => home.join(".obelisk").join("recap"),
+    }
+}
+
+/// Expand a leading `~` against the given home.
+fn expand_home(home: &Path, value: &str) -> std::path::PathBuf {
+    let rest = value.trim_start_matches('~');
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    if rest.is_empty() {
+        home.to_path_buf()
+    } else {
+        home.join(rest)
+    }
+}
+
+/// Persist a custom recap directory (Settings #10). Empty = default.
+pub fn save_recap_dir(home: &Path, dir: &str) -> Result<(), String> {
+    if !dir.is_empty() && !dir.starts_with('/') && !dir.starts_with('~') {
+        return Err("Recap directory must be absolute (or ~-relative)".to_string());
+    }
+    let settings_path = obelisk_core::provider_settings::settings_path(home);
+    let mut value = match obelisk_core::provider_settings::read_persisted_provider_settings(home) {
+        obelisk_core::provider_settings::SettingsRead::Ok(value) => value,
+        obelisk_core::provider_settings::SettingsRead::Failed(error) => return Err(error),
+    };
+    if !value.is_object() {
+        return Err("settings.json is not a JSON object".to_string());
+    }
+    let object = value.as_object_mut().unwrap();
+    if dir.is_empty() {
+        object.remove("recapDir");
+    } else {
+        object.insert("recapDir".to_string(), serde_json::json!(dir));
+    }
+    let serialized = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    let parent = settings_path
+        .parent()
+        .ok_or("settings path has no parent")?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    let temporary = settings_path.with_extension("json.tmp");
+    std::fs::write(&temporary, serialized).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, &settings_path).map_err(|e| e.to_string())
+}
+
 pub fn list_recaps(home: &Path) -> Vec<String> {
-    let dir = home.join(".obelisk").join("recap");
+    let dir = recap_dir(home);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -824,8 +889,109 @@ pub fn list_recaps(home: &Path) -> Vec<String> {
 
 /// Read one recap file. The name is basename-checked like the TS side, so a
 /// crafted name cannot escape the recap directory.
+/// One recap list entry (Vue RecapList row; R1): parsed headline fields
+/// for the timeline presentation.
+#[derive(Debug, Clone, Default)]
+pub struct RecapEntry {
+    pub filename: String,
+    /// "weekly" | "monthly" (defaults to weekly when absent).
+    pub kind: String,
+    /// e.g. "W37".
+    pub period_label: String,
+    /// "Jun 1 – 7" style range.
+    pub date_range: String,
+    /// Year for grouping (period.start prefix; "?" when missing).
+    pub year: String,
+    pub persona_title: String,
+    pub persona_claim: String,
+    pub archetype: String,
+    pub sessions: i64,
+    pub tokens: i64,
+}
+
+/// Parse "YYYY-MM-DD" into a NaiveDate (defensive).
+fn parse_iso_day(value: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
+}
+
+/// All recap entries, newest period first (Vue byYear + timeline rows).
+pub fn list_recap_entries(home: &Path) -> Vec<RecapEntry> {
+    let names = list_recaps(home);
+    let mut entries: Vec<RecapEntry> = names
+        .into_iter()
+        .filter_map(|filename| {
+            let value = read_recap(home, &filename)?;
+            let period = value.get("period").cloned().unwrap_or_default();
+            let persona = value.get("persona").cloned().unwrap_or_default();
+            let metrics = value.get("metrics").cloned().unwrap_or_default();
+            let start = period
+                .get("start")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let end = period
+                .get("end")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let date_range = match (parse_iso_day(&start), parse_iso_day(&end)) {
+                (Some(s), Some(e)) => format!(
+                    "{} {} – {}",
+                    MONTHS_SHORT[(s.month0() as usize).min(11)],
+                    s.day(),
+                    e.day()
+                ),
+                _ => String::new(),
+            };
+            Some(RecapEntry {
+                filename,
+                kind: value
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("weekly")
+                    .to_string(),
+                period_label: period
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                date_range,
+                year: start.get(0..4).unwrap_or("?").to_string(),
+                persona_title: persona
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                persona_claim: persona
+                    .get("claim")
+                    .or_else(|| persona.get("subtitle"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                archetype: persona
+                    .get("archetype")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("architect")
+                    .to_string(),
+                sessions: metrics
+                    .get("sessions")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                tokens: metrics.get("tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+            })
+        })
+        .collect();
+    // Newest first by (year, period label).
+    entries.sort_by(|a, b| {
+        b.year
+            .cmp(&a.year)
+            .then(b.period_label.cmp(&a.period_label))
+    });
+    entries
+}
+
 pub fn read_recap(home: &Path, filename: &str) -> Option<serde_json::Value> {
-    let dir = home.join(".obelisk").join("recap");
+    let dir = recap_dir(home);
     let base = std::path::Path::new(filename);
     if base.file_name()? != base.as_os_str() {
         return None;
@@ -960,6 +1126,178 @@ pub fn save_editor_scheme(home: &Path, scheme: &str) -> Result<(), String> {
     std::fs::rename(&temporary, &settings_path).map_err(|error| error.to_string())
 }
 
+// ---- Subagent detail (Vue SubagentDetail parity; #54) ---------------------
+
+/// One subagent link row: resolves a tool-call id to its subagent agent id
+/// via the subagents table (parent_tool_use_id).
+#[derive(Debug, Clone, Default)]
+pub struct SubagentLink {
+    pub agent_id: String,
+    /// Kept for the detail-page header (type chip).
+    #[allow(dead_code)]
+    pub agent_type: String,
+    pub description: String,
+    pub duration_ms: i64,
+    pub total_tokens: i64,
+}
+
+/// Look up the subagent spawned by one tool call (Agent/Task tools).
+pub fn subagent_for_tool_call(
+    conn: &rusqlite::Connection,
+    tool_call_id: &str,
+) -> Option<SubagentLink> {
+    conn.query_row(
+        "SELECT agent_id, COALESCE(agent_type,''), COALESCE(description,''), \
+         COALESCE(duration_ms,0), COALESCE(total_tokens,0) \
+         FROM subagents WHERE parent_tool_use_id = ?1",
+        [tool_call_id],
+        |row| {
+            Ok(SubagentLink {
+                agent_id: row.get(0)?,
+                agent_type: row.get(1)?,
+                description: row.get(2)?,
+                duration_ms: row.get(3)?,
+                total_tokens: row.get(4)?,
+            })
+        },
+    )
+    .ok()
+}
+
+/// Load one subagent's timeline (messages + tool calls joined, visible
+/// only — Vue getSubagentMessages/ToolCalls/ToolResults parity).
+pub fn load_subagent_detail(
+    home: &Path,
+    agent_id: &str,
+) -> Option<(String, Vec<crate::timeline::TimelineMessage>)> {
+    let conn = db::open_read_db(home).ok()?;
+    // Parent session id (first message of the agent).
+    let session_id: String = conn
+        .query_row(
+            "SELECT COALESCE(session_id, '') FROM messages WHERE agent_id = ?1 LIMIT 1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+
+    let mut messages: Vec<crate::timeline::TimelineMessage> = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT uuid, session_id, type, timestamp, role, text, content_type, \
+             COALESCE(is_meta, 0), COALESCE(visibility, 'visible'), model, agent_id, \
+             input_tokens, output_tokens, cwd, COALESCE(source, 'claude') \
+             FROM messages \
+             WHERE agent_id = ?1 AND COALESCE(visibility, 'visible') = 'visible' \
+             ORDER BY timestamp, uuid",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([agent_id], |row| {
+            Ok(crate::timeline::TimelineMessage {
+                uuid: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                session_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r#type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                timestamp: row.get(3)?,
+                role: row.get(4)?,
+                text: row.get(5)?,
+                content_type: row.get(6)?,
+                is_meta: row.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0,
+                visibility: row
+                    .get::<_, Option<String>>(8)?
+                    .unwrap_or_else(|| "visible".to_string()),
+                model: row.get(9)?,
+                agent_id: row.get(10)?,
+                input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                cwd: row.get(13)?,
+                source: row
+                    .get::<_, Option<String>>(14)?
+                    .unwrap_or_else(|| "claude".to_string()),
+                tool_calls: Vec::new(),
+                workflow: None,
+                summary: None,
+                workflow_agents: Vec::new(),
+            })
+        })
+        .ok()?;
+    for message in rows.flatten() {
+        messages.push(message);
+    }
+
+    // Tool calls by message uuid (same join as the session detail path).
+    let mut calls_by_message: std::collections::HashMap<String, Vec<TimelineToolCall>> =
+        std::collections::HashMap::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, input_json, file_path, message_uuid FROM tool_calls \
+             WHERE message_uuid IN (SELECT uuid FROM messages WHERE agent_id = ?1) \
+             ORDER BY rowid",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([agent_id], |row| {
+            let uuid: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
+            let call = TimelineToolCall {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                input_json: row.get(2)?,
+                file_path: row.get(3)?,
+                result: None,
+                workflow: None,
+                subagent: None,
+            };
+            Ok((uuid, call))
+        })
+        .ok()?;
+    for (uuid, call) in rows.flatten() {
+        calls_by_message.entry(uuid).or_default().push(call);
+    }
+
+    // Results by tool-call id.
+    let mut results: std::collections::HashMap<String, TimelineToolResult> =
+        std::collections::HashMap::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT tool_call_id, content, COALESCE(is_error, 0) FROM tool_results \
+             WHERE tool_call_id IN ( \
+               SELECT tc.id FROM tool_calls tc \
+               JOIN messages m ON m.uuid = tc.message_uuid WHERE m.agent_id = ?1)",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([agent_id], |row| {
+            let id: String = row.get(0)?;
+            let result = TimelineToolResult {
+                content: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                is_error: row.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0,
+            };
+            Ok((id, result))
+        })
+        .ok()?;
+    for (id, result) in rows.flatten() {
+        results.insert(id, result);
+    }
+
+    for message in &mut messages {
+        if let Some(calls) = calls_by_message.remove(&message.uuid) {
+            message.tool_calls = calls
+                .into_iter()
+                .map(|mut call| {
+                    if let Some(result) = results.remove(&call.id) {
+                        call.result = Some(result);
+                    }
+                    // Agent/Task calls link to their subagent (#20).
+                    if call.name == "Agent" || call.name == "Task" {
+                        call.subagent = subagent_for_tool_call(&conn, &call.id);
+                    }
+                    call
+                })
+                .collect();
+        }
+    }
+    Some((session_id, messages))
+}
+
 // ---- Full-text search (the agent-facing FTS contract, exposed in-app so
 // the search box aligns with `obelisk --search`; read-only) ----
 
@@ -1053,6 +1391,44 @@ fn read_projects(conn: &rusqlite::Connection) -> Vec<ProjectSummary> {
     rows.filter_map(Result::ok).collect()
 }
 
+/// Slug → display label (Vue formatProjectLabel): the basename of the
+/// shortest project_path observed for the slug, else the trimmed slug.
+fn project_label_map(conn: &rusqlite::Connection) -> std::collections::HashMap<String, String> {
+    let mut labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT project, project_path FROM sessions \
+         WHERE project IS NOT NULL AND project_path IS NOT NULL",
+    ) else {
+        return labels;
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        ))
+    }) else {
+        return labels;
+    };
+    for (slug, path) in rows.flatten() {
+        if path.is_empty() {
+            continue;
+        }
+        match labels.get_mut(&slug) {
+            Some(existing) if existing.len() <= path.len() => {}
+            _ => {
+                labels.insert(slug, path);
+            }
+        }
+    }
+    labels
+        .into_iter()
+        .map(|(slug, path)| {
+            let label = path.rsplit('/').next().unwrap_or(&path).to_string();
+            (slug, label)
+        })
+        .collect()
+}
+
 fn read_sessions(conn: &rusqlite::Connection) -> Vec<SessionSummary> {
     let mut stmt = match conn.prepare(
         "SELECT id, COALESCE(title, ''), COALESCE(project, ''), COALESCE(source, 'claude'),
@@ -1101,6 +1477,8 @@ pub struct TimelineToolCall {
     pub result: Option<TimelineToolResult>,
     /// The workflow run record for Workflow tool calls.
     pub workflow: Option<serde_json::Value>,
+    /// The subagent spawned by this call (Agent/Task tools; #20).
+    pub subagent: Option<SubagentLink>,
 }
 
 #[derive(Debug, Clone)]
@@ -1246,6 +1624,7 @@ pub fn load_session_detail(conn: &rusqlite::Connection, session_id: &str) -> Opt
                     file_path: row.get(4)?,
                     result: None,
                     workflow: None,
+                    subagent: None,
                 };
                 let message_uuid: Option<String> = row.get(1)?;
                 Ok((message_uuid, call))

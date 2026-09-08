@@ -158,8 +158,16 @@ fn search_hit_row(
             let home = home.clone();
             app.update(cx, |app, cx| {
                 // Jump straight to the matched message (M4.5): reuse the
-                // memory jump machinery, which locates and highlights.
-                app.open_session_focused(session_id, message_uuid, home, window, cx);
+                // memory jump machinery, which locates and highlights; the
+                // query rides along for the matched chip (parity #52).
+                app.open_session_focused(
+                    session_id,
+                    message_uuid,
+                    Some(app.search_query.clone()),
+                    home,
+                    window,
+                    cx,
+                );
             });
         })
 }

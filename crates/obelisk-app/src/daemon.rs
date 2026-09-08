@@ -169,7 +169,7 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
         )
         .and_then(|meta| meta.modified())
         .ok();
-        let recap_dir = home.join(".obelisk").join("recap");
+        let recap_dir = crate::data::recap_dir(&home);
         let mut last_recap_mtime = std::fs::metadata(&recap_dir)
             .and_then(|meta| meta.modified())
             .ok();
@@ -243,7 +243,12 @@ pub fn start(cx: &mut gpui::App, home: PathBuf, cwd: PathBuf) {
                                     for app in apps {
                                         let _ = app.update(cx, |app, cx| {
                                             if app.view == crate::views::AppView::Recap {
-                                                app.recaps = None;
+                                                // Reload, not clear: rendering maps
+                                                // None to an empty list, which
+                                                // would flash the empty state.
+                                                app.recaps = Some(std::rc::Rc::new(
+                                                    crate::data::list_recap_entries(&home),
+                                                ));
                                                 cx.notify();
                                             }
                                         });

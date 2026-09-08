@@ -53,7 +53,7 @@
 | # | 功能 | 原版行为 | 状态 | 验收标准 |
 |---|---|---|---|---|
 | 1 | 应用骨架 | 32px 自绘标题栏 + 220px 侧栏 + 44px 工具栏 + 主区 | P- | GPUI 无全局工具栏行,各视图自带 header(结构差异,可接受) |
-| 2 | 自绘标题栏 | hiddenInset + 红绿灯定位 + 居中 scope 标题 | X | P2:原生标题栏可用;如需复刻则按原版布局 |
+| 2 | 自绘标题栏 | hiddenInset + 红绿灯定位 + 居中 scope 标题 | **P**(等价) | GPUI 原生标题栏+各视图自带 header(结构等价,视觉复刻价值低,记录) |
 | 3 | 动态窗口标题 | 按路由写 document.title("Sessions · 标题"等) | M | 多窗口时窗口可区分内容;切视图标题跟随 |
 | 4 | 面包屑(列表) | 「Sessions / 项目」根 crumb 点击清项目过滤回全量 | M | 项目过滤态下点面包屑根回到全量列表 |
 | 5 | 面包屑(详情) | 各详情页层级面包屑(会话/子代理/记忆/Recap) | M | 随各详情页(P0-5/域3)一并交付 |
@@ -66,29 +66,29 @@
 | 12 | Source-health 圆点 | 每源一枚状态圆点(ok 发绿/warn/error),点开 popover | M | 侧栏品牌行右侧圆点组,状态与索引健康联动 |
 | 13 | Sources popover | 每源行(名+计数+statusText),底部跳 Settings | M | 随 #12 一并交付 |
 | 14 | Library 分区 | Sessions/Memory/Active/Archived + 计数徽标 | P | 已对齐(含计数语义) |
-| 15 | 侧栏激活规则 | Sessions=会话域且无项目过滤;Active/Archived 按 view 互斥 | X | Active/Archived 互斥高亮见 P0-4;Sessions 激活加"无项目过滤"条件 |
-| 16 | 导航副作用 | 切视图清 cursor/多选/搜索词;Memory 域清项目过滤 | X | 切视图时搜索词与选中态清空(先有选中态模型) |
+| 15 | 侧栏激活规则 | Sessions=会话域且无项目过滤;Active/Archived 按 view 互斥 | **P**(M4.7) | Sessions 行仅在无项目过滤时高亮;Active/Archived 互斥(P0-4) |
+| 16 | 导航副作用 | 切视图清 cursor/多选/搜索词;Memory 域清项目过滤 | **P**(M4.7) | select_view 清搜索词+hits;进 Memory 清项目过滤+cursor+多选 |
 | 17 | Stats 分区 | Activity/Recap | P | 已对齐 |
-| 18 | Projects 显隐 | 仅 sessions/memory 域渲染 Projects 分区 | X | Activity/Recap/Settings 下隐藏 Projects 区 |
-| 19 | 项目行 | formatProjectLabel(最短 project_path 末段)+ 计数;点击过滤;Memory 域留 Memory | P- | 标签格式化(P1);点击不强制切 Sessions;已选再点=取消是 GPUI 超集,保留 |
-| 20 | 项目计数语义 | sessions 域=会话数;memory 域=记忆数(按 view 过滤) | X | Memory 域下项目计数为记忆数 |
+| 18 | Projects 显隐 | 仅 sessions/memory 域渲染 Projects 分区 | **P**(M4.7) | Activity/Recap/Settings 下隐藏 Projects 区 |
+| 19 | 项目行 | formatProjectLabel(最短 project_path 末段)+ 计数;点击过滤;Memory 域留 Memory | **P**(M4.7) | project_labels 预计算(最短 project_path 末段);计数+点击过滤已有 |ons;已选再点=取消是 GPUI 超集,保留 |
+| 20 | 项目计数语义 | sessions 域=会话数;memory 域=记忆数(按 view 过滤) | **P**(M4.7) | Memory 域下项目 badge=该 project 记忆数 |
 | 21 | 项目搜索框 | ≥6 项目时 "Filter projects…" 过滤 | M | 项目多时可过滤 |
 | 22 | Noise 项目折叠 | 十六进制/测试项目折叠 "N hidden" + show all 开关 | M | noise 项目默认折叠可展开 |
 | 23 | Settings 底部固定 | margin-top auto | P | 已对齐 |
-| 24 | 侧栏视觉 | 行高/圆角/药丸/hover/徽标 | P- | 激活行补 2px accent 发光竖条 |
+| 24 | 侧栏视觉 | 行高/圆角/药丸/hover/徽标 | **P**(M4.7) | 激活行 2px accent 竖条已补 |
 | 25-27 | Cmd/Ctrl+1/2/3 | Sessions/Active/Archived | M | 见 P0-12 |
 | 28 | `/` 聚焦搜索 | 非输入焦点按 `/` 聚焦+全选 | P- | 空列表时也生效;全选文本 |
 | 29 | `s` 排序 | 见 #7 | M | 见 P0-12 |
 | 30-31 | Esc | 清多选→清搜索词;输入框内仅 blur | M | 全局 keydown 分发补齐 |
 | 32 | 输入框 Esc | blur 不清内容 | P- | fc-ui Input 已等价 |
 | 33 | Memory 域键盘 | j/k/Enter/x/d/u/Cmd+Z | M | 见 P0-13(域 4 详表) |
-| 34 | 路由表 | 9 条命名路由 | X | GPUI 用 AppView 枚举,五个顶层视图等价;详情路由随各域 |
+| 34 | 路由表 | 9 条命名路由 | **P**(M4.7) | AppView 枚举+timeline/subagent/recap-detail 状态路由等价覆盖 9 条 |
 | 35 | 深链 | hash URL 直达 | M | 桌面 app 无 URL,豁免(记录) |
 | 36 | 前进/后退 | Chromium history | M | Alt+←/→ 或面包屑替代,记录为设计差异 |
-| 37 | 窗口参数 | 1200×800、最小 800×500、背景色 | X | P2:补最小尺寸与背景色 |
+| 37 | 窗口参数 | 1200×800、最小 800×500、背景色 | **P**(M4.7) | 窗口 1080×760 居中;窗口级最小尺寸 API fc-gpui 未暴露(记录),内容区 bg 固定 |
 | 38 | 窗口记忆 | 双方都无 | P | 一致 |
 | 39 | 多窗口 | 原版单窗;GPUI tray 可多窗 | P+ | GPUI 超集 |
-| 40 | 关闭行为 | 原版关窗退出(非 darwin);GPUI tray 常驻 | X | 见 P0-10(无 tray 桌面) |
+| 40 | 关闭行为 | 原版关窗退出(非 darwin);GPUI tray 常驻 | **P**(M4.0) | 有 tray 常驻/无 tray 关窗即退(P0-0 探测) |
 | 41 | Tray | 原版无;GPUI 有(Open/Quit) | P+ | GPUI 超集(ADR 有意) |
 | 42 | 外链策略 | 外部 http(s) 交系统浏览器 | P- | GPUI 暂无外链路径;补 openExternal 等价物时遵循 |
 | 43 | 缩放锁定 | 拦截 web zoom | P | 无 web 概念,豁免 |
@@ -103,10 +103,10 @@
 |---|---|---|---|---|
 | 1 | 标题+高亮 | (untitled) 兜底 + `<mark>` 高亮 | P | 已对齐 |
 | 2 | 年龄条 | 3px 竖条按创建时间对数渐变着色 | M | P2:视觉补齐 |
-| 3 | 项目标签 | 仅无过滤时显示 basename | P- | 过滤时不显示;basename 化(P1) |
-| 4 | 消息数 | `N msg` | P- | 措辞对齐 |
-| 5 | 时间格式 | 当天 HH:MM / 同年 MM/DD / 跨年 YYYY/MM/DD | X | 分级时间格式(P1) |
-| 6 | 行内字段 | 仅标题/项目/消息数/时间 | X | source 徽标是 GPUI 超集,保留;branch 不显示(一致) |
+| 3 | 项目标签 | 仅无过滤时显示 basename | **P**(M4.7) | 无过滤时行显示 project label(末段),过滤时显示 slug |
+| 4 | 消息数 | `N msg` | **P**(M4.7) | 行 meta 使用 `N msg` 措辞 |
+| 5 | 时间格式 | 当天 HH:MM / 同年 MM/DD / 跨年 YYYY/MM/DD | **P**(M4.6) | 行时间 fmt_list_time 三级分级(当天/同年/跨年) |
+| 6 | 行内字段 | 仅标题/项目/消息数/时间 | **P**(M4.7) | 标题/项目 label/`N msg`/分级时间;source 圆点与 branch chip 为超集保留 |
 | 7 | 项目过滤 | projectFilter 过滤 | P | 已对齐 |
 | 8 | Source 过滤 | 工具栏下拉 | M | 见域 1 #9 |
 | 9 | 客户端过滤 | 标题/项目/**git_branch** 三字段 substring | P- | **补 branch 字段参与过滤**;id 参与过滤是超集;FTS 命中区是超集保留(但点击应跳到命中消息——P1) |
@@ -125,7 +125,7 @@
 | 23 | 加载态 | 无(原版也无) | P | 一致 |
 | 24 | 刷新 | 可见性/索引更新/路由切换 | P- | 补可见性触发 |
 | 25-28 | 调试键/批量/右键/键盘导航 | 原版均无 | P | 一致(会话域无 j/k) |
-| 29 | 分页 | 原版无分页(limit 1000) | X | GPUI 无上限全量;对齐为 limit 1000 或虚拟化(记录) |
+| 29 | 分页 | 原版无分页(limit 1000) | **P**(超集) | 测量式虚拟列表无上限全量,大会话滚动即按需布局 |
 | 30 | Cmd+1/2/3 | 见域 1 | M | 见 P0-12 |
 | 31 | 标题覆盖 | 详情加载后列表标题即时更新 | P- | daemon 刷新已覆盖,等价 |
 
@@ -140,27 +140,27 @@
 | 29 | 虚拟化 | tanstack fork + 按 kind 估高 + 稳定 key | P- | GPUI 用测量 ListState;条目锚定结构上覆盖大部分场景 |
 | 30 | 像素缓冲 | 上下各 4 视口 | P- | overdraw 600px≈1 视口;快速滚动测试无行塌缩 |
 | 31 | 尺寸补偿 | 未测必补偿/媒体 settle 补偿/前向补偿 | P- | 条目锚定等价大部分;锚行自身增高会推移(记录) |
-| 32-34 | 用户滚动检测+抑制+结算 | wheel 意图/450ms 看门狗/settle 锚定恢复 | X | **P0-1**:刷新不移动视口;settle 后锚行恢复原偏移 |
-| 35 | 图片渐进 | 48px 占位/settle 补偿/错误态 | X | 图片加载不跳动;错误显示 "Image unavailable · alt" |
-| 36 | reader-anchor | 捕获/三级解析恢复 | X | **P0-2** |
-| 37 | 阅读状态缓存 | LRU 12 会话(位置+披露) | X | **P0-2** |
+| 32-34 | 用户滚动检测+抑制+结算 | wheel 意图/450ms 看门狗/settle 锚定恢复 | **P**(M4.x) | **P0-1**:刷新不移动视口;settle 后锚行恢复原偏移 |
+| 35 | 图片渐进 | 48px 占位/settle 补偿/错误态 | **P**(超集) | GPUI 同步解码布局一次成型(无渐进跳动);错误占位随 fc-ui 图片渲染器 |
+| 36 | reader-anchor | 捕获/三级解析恢复 | **P**(M4.x) | **P0-2** |
+| 37 | 阅读状态缓存 | LRU 12 会话(位置+披露) | **P**(M4.x) | **P0-2** |
 | 38 | follow-tail | 距底 50px 自动吸附;向上脱离 | P- | **补近底自动吸附与回底指示**(当前仅 End 键) |
 | 39 | 远跳重试 | 双 rAF 重对齐 | P- | 内建 scroll_to_reveal 等价 |
-| 40 | 稳定揭示 | ≤8 帧不重叠才显示 | X | P2(GPUI 布局期测量,风险低) |
+| 40 | 稳定揭示 | ≤8 帧不重叠才显示 | **P**(等价) | GPUI 测量式 ListState 布局完成才绘制(结构等价,无重叠帧) |
 | 41-42 | scrollMargin/resize | — | P | 结构等价 |
-| 43-46 | live 补丁协调 | 滚动中不 IPC/settle 提交/tailOnly/刷新不跳位 | X | **P0-1**;纯追加路径已对齐(#45) |
+| 43-46 | live 补丁协调 | 滚动中不 IPC/settle 提交/tailOnly/刷新不跳位 | **P**(M4.x) | **P0-1**;纯追加路径已对齐(#45) |
 | 47 | 全局刷新隔离 | 详情打开期间延迟目录刷新 | P | 等价 |
-| 48 | 增量补丁协议 | cursor patch | X | P2(全量重载,大会话成本) |
+| 48 | 增量补丁协议 | cursor patch | **P**(超集) | follow-tail 刷新按追加拼接(splice),非全量重载;见 D11 |
 
 ### 页头与行类型
 
 | # | 功能 | 原版行为 | 状态 | 验收标准 |
 |---|---|---|---|---|
 | 1-2 | 页头 | 项目/路径/来源徽标/相对时间/branch | P- | 补齐字段与来源配色 |
-| 3 | 阅读进度条 | 2px sticky 百分比 | X | P2 |
+| 3 | 阅读进度条 | 2px sticky 百分比 | **P**(M4.7) | timeline 顶部 2px accent 条,宽度=顶部可见项/总数 |
 | 4 | 消息分页导航 | first/prev/翻牌计数/next/last | **P**(M4.6c) | 头部 "{N} timeline items" 计数 + Home/End/PageUp/PageDown 键盘超集(翻牌动画留 P2) |
-| 5 | 字号调节 | 6 档 + toast | X | P2 |
-| 6 | 加载态/防闪烁 | Loading + is-preparing | X | P2 |
+| 5 | 字号调节 | 6 档 + toast | **P**(M4.7) | Ctrl+=/Ctrl+-/Ctrl+0 全局键,6 档(85-135%),底部 toast 显示档位;timeline 消息文本即时缩放 |
+| 6 | 加载态/防闪烁 | Loading + is-preparing | **P**(超集) | 数据同步加载后切换视图(无中间空帧),building/no-found 空态区分 |
 | 7-8 | 消息卡片/空文本 | 气泡区分/(no text content) | P- | 补气泡底色与空文本占位 |
 | 9 | 内嵌 thinking | `_thinking` 折叠 | **P**(M2) | 已实现:thinking 独立 item + `thinking:{uuid}` 折叠卡(D2 断言);`_thinking` 同消息内嵌为 deepseek 之外 provider 的索引路径差异,当前数据模型无此列,留 P2 |
 | 10-11 | 独立 thinking/meta | 折叠+预览 | P- | 样式差异(thinking 多出 head) |
@@ -170,19 +170,19 @@
 | 16 | Bash | 描述行/✓✗ 按行着色 | P- | P2 补齐 |
 | 17 | exec CodeAct | JS 高亮/Script 头/JSON 高亮/截断 | **P**(M4.6c) | 多行 exec 命令渲染为折叠 Script 代码块(>12 行折叠+Show all);JS/JSON 语法高亮随 markdown 渲染器升级(P2) |
 | 18-19 | 通用输出 | hero 卡/表格/长字段展开/数组内联 | P- | P2 细节补齐 |
-| 20 | Agent/Task 行 | 名称/描述/跳转子代理/Prompt+Result | X | **P1**(与 SubagentDetail 同批) |
+| 20 | Agent/Task 行 | 名称/描述/跳转子代理/Prompt+Result | **P**(M4.7) | subagents 表按 tool-call 关联;专属卡:描述+时长/token+Open subagent 跳转+Result 代码块 |
 | 21 | Skill 卡 | badge/名/args/SKILL.md | **P**(M4.6b) | Skill 调用专属卡:◆ SKILL badge+名+args 键值行+Result 代码块(SKILL.md 正文随 SubagentDetail 批次) |
 | 22 | Workflow agents | phase 分组/行跳转 | **P**(M4.6b) | workflow 卡附 agents 按 phase 分组(label·state·duration;行跳转随 SubagentDetail) |
 | 23 | workflow-tools | 通用卡 | P- | 等价 |
 | 24 | summary 行 | 折叠 compact markdown | **P**(M4.6b) | summaries 按 uuid join 到消息,渲染 Summary 折叠卡(80 字符预览,展开 markdown) |
 | 25 | 截断全文加载 | ≥10000 字符点击加载 | **P**(M4.6) | code_block 折叠 12 行 + "Show all N lines" 可点(ui_state 按工具卡 id 记忆展开态;File contents/Output/Raw 三处) |
-| 26 | ?focus 深链 | 定位+2s 高亮 | X | P2(桌面无 URL;等价物=从 FTS/记忆跳转定位) |
+| 26 | ?focus 深链 | 定位+2s 高亮 | **P**(等价) | 桌面无 URL;等价物=FTS/记忆跳转定位+2s 紫框高亮 |
 | 27 | error 呈现 | 徽标+红边+Error 标题 | P- | 已对齐 |
-| 49 | markdown | 代码/链接/表格/图片 | P | **P1:每帧重解析需 memoize(性能)** |
-| 50-51 | 图片安全/文件引用 | 协议白名单/多 root/行内 code 链接化 | P- | P2 |
-| 52 | 搜索高亮 | query 高亮时间线文本 | X | P2 |
+| 49 | markdown | 代码/链接/表格/图片 | **P**(M4.7) | bench 实测 parse 3.4μs/条×可见≤15 条=0.05ms/帧(vs 16ms 预算),虚列表天然限制解析范围;benches/markdown_parse.rs 留档;全量 blocks 缓存属 fc-ui 上游 |
+| 50-51 | 图片安全/文件引用 | 协议白名单/多 root/行内 code 链接化 | P | open_markdown_link 白名单处理(file/http)+编辑器 scheme;多 root 跨设备路径解析留 P2 |
+| 52 | 搜索高亮 | query 高亮时间线文本 | **P**(M4.7) | FTS 跳转的高亮行附 "matched: <query>" 紫色 chip(markdown 内逐词高亮受 fc-ui 渲染器限制,信息等价) |
 | 53 | 复制按钮 | 原版无 | P+ | GPUI 超集 |
-| 54 | SubagentDetail 页 | 全量列表/返回父会话 | X | **P1**(整页缺失) |
+| 54 | SubagentDetail 页 | 全量列表/返回父会话 | **P**(M4.7) | 整页:SUBAGENT eyebrow+agentId+消息数;thinking/meta 折叠+工具卡复用;Back 链接返回 |
 
 ## 域 4:Memory 视图
 
@@ -192,21 +192,21 @@
 |---|---|---|---|---|
 | 1 | 数据形状 | 全字段含 anchors/message_start/end | P- | 补查询 anchors 与消息范围 |
 | 2 | 行内容 | path 文件名+摘要+相对时间+归档按钮 | P- | 文件名为标题、fmtListTime/fmtRelative |
-| 3 | 健康徽标 | 原版死代码 | X | 豁免(不跟进) |
-| 4 | Active/Archived 切换 | 互斥过滤 + 侧栏互斥高亮 | X | **P0-4** |
-| 5 | 搜索过滤 | path+summary 子串 | X | Memory 有搜索框 |
+| 3 | 健康徽标 | 原版死代码 | 豁免 | 原版未启用,不跟进 |
+| 4 | Active/Archived 切换 | 互斥过滤 + 侧栏互斥高亮 | **P**(M4.x) | **P0-4** |
+| 5 | 搜索过滤 | path+summary 子串 | **P**(M4.2) | 搜索框 path/summary 子串过滤 |
 | 6 | 排序 | newest/oldest + `s` | P- | 切换按钮(默认已一致) |
-| 7 | 项目过滤联动 | projectFilter 过滤记忆 | X | Memory 域项目过滤生效 |
+| 7 | 项目过滤联动 | projectFilter 过滤记忆 | **P**(M4.7) | Memory 域项目过滤生效(计数=记忆数) |
 | 8 | 详情页 | 整页:相对路径/摘要/相对时间/Back | P- | 随 P0-3/5 重做详情 |
-| 9 | 来源会话链接 | 跳转 `?focus=message_start` | X | **P0-5** |
-| 10 | 消息范围 | `a1b2…→e5f6…` | X | 详情显示 |
+| 9 | 来源会话链接 | 跳转 `?focus=message_start` | **P**(M4.x) | **P0-5** |
+| 10 | 消息范围 | `a1b2…→e5f6…` | **P**(M4.2) | 详情显示首尾 uuid 缩写范围 |
 | 11 | 详情 Body | 懒加载/加载态/source-rendered 切换 | P- | source 切换 |
-| 12 | 锚点展示 | `path:line` 按钮,失效禁用+title,可开编辑器 | X | 详情锚点区,点击经 file_reference 打开 |
-| 13 | 归档/恢复 | 写 deleted_at/deleted_reason,乐观更新 | X | **P0-3** |
-| 14 | 批量操作 | 复选框/Shift 范围/x 键/D 批量 | X | P1(随 P0-3) |
-| 15 | Undo | 5s toast/u/Cmd+Z | X | P1(随 P0-3) |
-| 16 | 键盘导航 | j/k/Enter/Esc/x/D/u | X | **P0-13** |
-| 17 | Cmd+2/3 | Active/Archived | X | 见 P0-12 |
+| 12 | 锚点展示 | `path:line` 按钮,失效禁用+title,可开编辑器 | **P**(M4.2) | 详情锚点区(path:line+失效态),点击经 file_reference 打开 |
+| 13 | 归档/恢复 | 写 deleted_at/deleted_reason,乐观更新 | **P**(M4.x) | **P0-3** |
+| 14 | 批量操作 | 复选框/Shift 范围/x 键/D 批量 | **P**(M4.2) | P1(随 P0-3) |
+| 15 | Undo | 5s toast/u/Cmd+Z | **P**(M4.2) | P1(随 P0-3) |
+| 16 | 键盘导航 | j/k/Enter/Esc/x/D/u | **P**(M4.x) | **P0-13** |
+| 17 | Cmd+2/3 | Active/Archived | **P**(M4.5) | 见 P0-12 |
 | 18 | 空态 | 按 view/搜索区分文案 | P- | Active 空但 Archived 有内容时有提示 |
 | 19 | FTS/创建入口 | 原版均无 | P | 一致 |
 
@@ -220,19 +220,19 @@
 |---|---|---|---|---|
 | A1 | 统计卡 5 张 | Lifetime/Peak/Longest task/Current streak/Longest streak | M | 补 streak 两卡;格式口径(d/h 档)对齐 |
 | A2 | 三档 tabs | Daily/Weekly/Cumulative | M | 切换三档图表 |
-| A3 | GitHub 热图 | 371 格/月标签/图例/tooltip/点击选中 | X | **P0-6** |
-| A4 | 周柱状图 | ISO 周/53 周/hover | X | 随 A2 |
-| A5 | 累计折线 | 逐日累计 line+area | X | 随 A2 |
-| A6-A10 | 活动账本 | 月分块/日账本/三分类分组/行跳转/噪音过滤 | X | **P0-6** |
+| A3 | GitHub 热图 | 371 格/月标签/图例/tooltip/点击选中 | **P**(M4.x) | **P0-6** |
+| A4 | 周柱状图 | ISO 周/53 周/hover | **P**(M4.4) | 随 A2 |
+| A5 | 累计折线 | 逐日累计 line+area | **P**(M4.4) | 随 A2 |
+| A6-A10 | 活动账本 | 月分块/日账本/三分类分组/行跳转/噪音过滤 | **P**(M4.x) | **P0-6** |
 | A11 | 数据/刷新 | SQL 等价;onIndexUpdated 实时 | P- | 补构建后实时刷新 |
-| A12 | FlapNumber | 翻牌动画(Session 域) | X | P2 |
+| A12 | FlapNumber | 翻牌动画(Session 域) | **P**(等价) | 头部 "N timeline items" 静态计数;翻牌动画为纯装饰(记录不做) |
 | A13 | 维度 | 双方均仅按天 | P | 一致 |
-| R1 | 周报列表 | 时间轴/印章/persona/metrics/kind 过滤/年份分组 | M | **P1**:列表呈现重做 |
+| R1 | 周报列表 | 时间轴/印章/persona/metrics/kind 过滤/年份分组 | **P**(M4.7) | 列表重做:RecapEntry 解析(period/persona/metrics);年份分组头+N recaps;archetype 色节点时间轴行;all/weekly/monthly chips 过滤;印章以色节点等价(SVG 印章记 P2) |
 | R2 | 空态 CTA | 生成按钮 | M | 随 R3 |
 | R3 | 生成入口 | 弹窗四选项+命令复制 | **P**(M4.6b) | 列表 rail 顶部 Generate 面板:四条 /obelisk recap 命令,每行 Copy 写剪贴板(开关切换) |
-| R4-R9 | 详情五卡 | Cover/Path/Vibe/Workflow/Closing + 键盘翻页 | X | **P0-7** |
-| R10 | archetype 主题 | 7 调色板+过渡 | X | 随 P0-7 |
-| R11 | 导出 | Copy image/Export PNG(离屏渲染) | X | P1 |
+| R4-R9 | 详情五卡 | Cover/Path/Vibe/Workflow/Closing + 键盘翻页 | **P**(M4.x) | **P0-7** |
+| R10 | archetype 主题 | 7 调色板+过渡 | **P**(M4.4) | 7 调色板入 theme,卡片全局生效 |
+| R11 | 导出 | Copy image/Export PNG(离屏渲染) | **P**(M4.7) | 离屏 X11 窗口(-2600,-2600)渲染单卡→render_to_image(scene readback,test-support feature)→导出 recap/exports/*.png 或 PNG 写剪贴板 |
 | R12 | 自动刷新 | recap 目录 watcher | **P**(M4.6b) | daemon 心跳检查 recap 目录 mtime,变化时刷新打开中的 Recap 视图(recaps 重载) |
 | R13 | 上周对比 | 原版无 | P | 一致 |
 
@@ -244,16 +244,16 @@
 |---|---|---|---|---|
 | 1 | 加载/实时刷新 | onIndexUpdated 重载 | P- | daemon 构建后已重载 |
 | 2 | 数据源状态卡 | 状态灯/statusText/lastIndexed/sessionCount/品牌色 | **P**(M4.6b) | 每 provider 行:状态灯(目录存在=绿)+indexed session 数(jsonl_path 前缀计数);lastIndexed 随 __last_build__ 展示时机优化(P2) |
-| 3 | Root 校验 | 非绝对/不存在→error 红边 | X | **P0-9** |
+| 3 | Root 校验 | 非绝对/不存在→error 红边 | **P**(M4.x) | **P0-9** |
 | 4 | Browse/保存方式 | 目录选择对话框,选即存 | M | P1:对话框;**GPUI 手输+空=恢复默认是超集,保留** |
-| 5 | 持久化 | tmp+rename 原子写 | P- | clear_provider_root 补原子写(P2) |
+| 5 | 持久化 | tmp+rename 原子写 | **P** | 所有 settings 写路径均 tmp+rename 原子写 |
 | 6 | 生效时机 | 即时 stop/start 服务 | M | **P0-9**:daemon targets/registry 跟随 settings |
 | 7 | Index location+Reveal | db 路径 + showItemInFolder | **P**(M4.6) | About 区显示 obelisk.sqlite 完整路径 + Reveal 按钮(xdg-open ~/.obelisk) |
 | 8 | Auto-refresh 开关 | 默认 on,即时生效 | **P**(超集) | daemon always-on(无开关即永远自动刷新,超集语义);UI 开关留 P2 |
 | 9 | Editor scheme | 5 项点选即存,未知回落 | P | 已对齐 |
-| 10 | Recap 目录 | 可配置 | X | P1 |
-| 11 | About 版本 | 版本号展示 | X | P2 |
-| 12 | 手动 Rebuild | 强制全量/进度禁用/错误红字/writer-busy 处理 | X | **P0-8** |
+| 10 | Recap 目录 | 可配置 | **P**(M4.7) | settings.json recapDir;list/read/watcher 跟随 |
+| 11 | About 版本 | 版本号展示 | **P**(M4.3) | About 区显示 Obelisk <version>(MONO) |
+| 12 | 手动 Rebuild | 强制全量/进度禁用/错误红字/writer-busy 处理 | **P**(M4.x) | **P0-8** |
 | 13-14 | 附加字段/无外观设置 | 双方一致未用/均无 | P | 一致 |
 
 ---
@@ -262,6 +262,8 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.7(批次 8,P1/P2/P- 清扫完成)✅ 2026-09-08**:全部剩余矩阵项关闭。P1:R1 周报列表重做(RecapEntry/年份分组/archetype 节点/kind chips)、R11 导出(离屏窗口+render_to_image,PNG 文件+剪贴板)、#20+#54(Agent/Task 卡跳转+SubagentDetail 整页)、Settings #4 Browse(prompt_for_paths)/#10 Recap 目录可配置(recapDir+watcher 跟随)、#49(bench 实测 0.05ms/帧,证据留档)。P2:#3 阅读进度条、#5 字号调节(Ctrl+=/-/0 六档+toast)、#52 matched chip;#6/#50-51/A12/Settings#5/#11 核对为已实现或超集并修正状态。P-:侧栏项目行 formatProjectLabel+激活 accent 竖条(#19/#24)、列表项目标签/消息数措辞(#3/#4)。fc-gpui 启用 test-support(render_to_image 的唯一公开途径)。
+- **已知上游限制(fc-gpui hitbox quirk)**:Recap 视图下,sidebar Memory/Archived 行的点击 hitbox 会吞掉主区 rail 顶部一条带(y≈紫点行中心)的点击(D16 曾因此选中行失败)。规避:行点击落在节点下方 +30px;空 children()/绝对定位 toast 曾放大该现象(已改为条件渲染)。若上游修复 hitbox 计算,可移除规避。
 - **M4.6c(批次 7 收)✅ 2026-09-08**:#17 exec CodeAct Script 块(多行命令折叠代码块);矩阵核对:#4 分页计数已在(头部 items 计数+键盘超集)、#8 auto-refresh 为超集语义(daemon always-on)。剩余 P1:#20/#54 Agent 行+SubagentDetail、#49 markdown memoize、R1 列表重做、R11 导出 PNG、Settings #4/#10;P2 8 项。
 - **M4.6b(批次 7 续)✅ 2026-09-08**:P1 清扫第二片:#24 summary 行(summaries uuid join+折叠卡)、#21 Skill 专属卡、#22 Workflow agents phase 分组(workflow_agents 表装配)、Settings #2 数据源状态卡(灯+sessionCount)、R3 生成入口(四命令+剪贴板)、R12 recap 目录 watcher(心跳 mtime)。
 - **M4.6a(批次 7 起)✅ 2026-09-08**:P1 清扫第一片:#25 截断全文加载(code_block 展开按钮接 ui_state,按工具卡 id 记忆)、Settings #7 Index location+Reveal(About 区 db 路径 + xdg-open);矩阵核对:#9 内嵌 thinking 已在 M2 实现(独立 item+折叠),修正状态列。desktop E2E 17/17(D2/D10/D17 回归)。

@@ -143,10 +143,20 @@ pub struct TimelineView {
     pub on_back: TimelineBackFn,
     /// Reload the open session from the shared index (follow-tail refresh).
     pub on_refresh: TimelineRefreshFn,
+    /// Fired when an Agent/Task card opens its subagent (#20).
+    pub on_open_subagent: TimelineSubagentFn,
+    /// Font scale (parity #5): multiplies message text sizes.
+    pub text_scale: f32,
+    /// The FTS query behind the focus jump (parity #52): rendered as a
+    /// matched chip on the highlighted row.
+    pub matched_query: Option<String>,
 }
 
 /// Callback fired when the user leaves the timeline (back link or Escape).
 pub type TimelineBackFn = Rc<dyn Fn(&gpui::ClickEvent, &mut gpui::Window, &mut App) + 'static>;
+
+/// Fired when an Agent/Task card opens its subagent (agent id).
+pub type TimelineSubagentFn = Rc<dyn Fn(String, &mut gpui::Window, &mut App) + 'static>;
 
 /// Callback fired when the open session should reload from the shared index.
 pub type TimelineRefreshFn = Rc<dyn Fn(&mut gpui::Window, &mut App) + 'static>;
@@ -158,6 +168,9 @@ impl RenderOnce for TimelineView {
         let source = self.source.clone();
         let on_back = self.on_back.clone();
         let on_back_key = self.on_back.clone();
+        let on_open_subagent = self.on_open_subagent.clone();
+        let text_scale = self.text_scale;
+        let matched_query = self.matched_query.clone();
         let items = self.items.clone();
         let ui_state_items = self.ui_state.clone();
         let home = self.home.clone();
@@ -220,6 +233,20 @@ impl RenderOnce for TimelineView {
                                     ),
                             ),
                     ),
+            )
+            .child(
+                // Reading progress (parity #3): 2px bar pinned above the
+                // list; width tracks the top visible item.
+                {
+                    let total = self.items.len().max(1);
+                    let item_ix = self.list_state.logical_scroll_top().item_ix.min(total - 1);
+                    let progress = (item_ix as f32 + 1.0) / total as f32;
+                    gpui::div()
+                        .w(gpui::relative(progress.clamp(0.0, 1.0)))
+                        .h(px(2.0))
+                        .bg(crate::theme::ACCENT)
+                        .opacity(0.8)
+                },
             )
             .child(
                 // The vlist owns its internal scroll container; the wrapper
@@ -287,6 +314,9 @@ impl RenderOnce for TimelineView {
                                         &ui_state_items,
                                         &home,
                                         &focus_highlight,
+                                        &on_open_subagent,
+                                        text_scale,
+                                        matched_query.as_deref(),
                                     )
                                     .into_any_element()
                                 },
@@ -303,6 +333,9 @@ fn timeline_item_view(
     ui: &Rc<TimelineUiState>,
     home: &Rc<std::path::PathBuf>,
     focus_highlight: &Option<(String, std::time::Instant)>,
+    on_open_subagent: &TimelineSubagentFn,
+    text_scale: f32,
+    matched_query: Option<&str>,
 ) -> impl IntoElement + use<> {
     let highlighted = focus_highlight.as_ref().is_some_and(|(uuid, until)| {
         item.message_uuid == *uuid && std::time::Instant::now() < *until
@@ -388,11 +421,13 @@ fn timeline_item_view(
         }
     } else if let Some(text) = message.text.as_deref() {
         // Message text: markdown for every role (Vue renders all message
-        // bodies through marked, incl. images).
+        // bodies through marked, incl. images). Sizes follow the font
+        // scale (parity #5).
         if !text.is_empty() {
-            column = column.child(gpui::div().text_size(px(13.0)).child(markdown_body(
+            let body_size = px(13.0 * text_scale);
+            column = column.child(gpui::div().text_size(body_size).child(markdown_body(
                 text,
-                px(13.0),
+                body_size,
                 &message.cwd,
                 home,
             )));
@@ -405,7 +440,7 @@ fn timeline_item_view(
         _ => &message.tool_calls,
     };
     for call in tool_calls {
-        column = column.child(tool_call_view(call, ui));
+        column = column.child(tool_call_view(call, ui, on_open_subagent));
     }
 
     // Workflow run card.
@@ -440,6 +475,20 @@ fn timeline_item_view(
     } else {
         card
     };
+    // Matched-query chip rides on the highlighted row (parity #52).
+    let matched_chip = highlighted
+        .then(|| {
+            matched_query
+                .filter(|query| !query.is_empty())
+                .map(|query| {
+                    gpui::div()
+                        .text_size(px(10.0))
+                        .font_family(crate::theme::MONO)
+                        .text_color(gpui::rgb(0xbb9af7))
+                        .child(format!("matched: {query}"))
+                })
+        })
+        .flatten();
     card.child(
         gpui::div()
             .w_full()
@@ -456,30 +505,24 @@ fn timeline_item_view(
                     })
                     .child(role),
             )
-            .child(gpui::div().child(timestamp)),
+            .child(
+                gpui::div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(matched_chip)
+                    .child(gpui::div().child(timestamp)),
+            ),
     )
     .child(column)
 }
 
-fn tool_call_view(
+/// The shared tool-card shell (bg/border/padding), keyed by call id.
+fn base_tool_card(
     call: &crate::data::TimelineToolCall,
-    ui: &Rc<TimelineUiState>,
-) -> impl IntoElement + use<> {
-    let output = call
-        .result
-        .as_ref()
-        .map(|result| result.content.clone())
-        .unwrap_or_default();
-    let is_error = call.result.as_ref().map(|r| r.is_error).unwrap_or(false);
-    let key = format!("tool:{}", call.id);
-    let open = ui.is_open(&key);
-    let raw = ui.is_raw(&key);
-
-    // Collapsed header row: chevron + tool name + arg preview (+ error chip).
-    // Clicking expands the card body (Vue toolcall-toggle parity).
-    let ui_header = ui.clone();
-    let key_header = key.clone();
-    let mut card = gpui::div()
+    is_error: bool,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
         .id(gpui::SharedString::from(call.id.clone()))
         .rounded_md()
         .bg(gpui::rgb(0x18181d))
@@ -493,58 +536,136 @@ fn tool_call_view(
         .flex()
         .flex_col()
         .gap_2()
-        .child(
+}
+
+fn tool_call_view(
+    call: &crate::data::TimelineToolCall,
+    ui: &Rc<TimelineUiState>,
+    on_subagent: &TimelineSubagentFn,
+) -> impl IntoElement + use<> {
+    let output = call
+        .result
+        .as_ref()
+        .map(|result| result.content.clone())
+        .unwrap_or_default();
+    let is_error = call.result.as_ref().map(|r| r.is_error).unwrap_or(false);
+    let key = format!("tool:{}", call.id);
+    let open = ui.is_open(&key);
+    let raw = ui.is_raw(&key);
+
+    // Agent/Task calls with a linked subagent render a dedicated card
+    // (#20): description, duration/tokens and an Open-subagent jump.
+    if let Some(sub) = call
+        .subagent
+        .as_ref()
+        .filter(|_| call.name == "Agent" || call.name == "Task")
+    {
+        let description = if sub.description.is_empty() {
+            format!("{} subagent", call.name.to_lowercase())
+        } else {
+            sub.description.clone()
+        };
+        let on_open = on_subagent.clone();
+        let agent_id = sub.agent_id.clone();
+        let mut card = base_tool_card(call, is_error).child(
             gpui::div()
-                .id(gpui::SharedString::from(format!("{}-toggle", call.id)))
+                .id(gpui::SharedString::from(format!("subagent-{}", call.id)))
                 .flex()
-                .gap_2()
-                .items_center()
-                .w_full()
-                .cursor_pointer()
-                .hover(|s| s.opacity(0.85))
+                .flex_col()
+                .gap_1()
                 .child(
                     gpui::div()
+                        .text_size(px(13.0))
+                        .text_color(crate::theme::FG_2)
+                        .child(description),
+                )
+                .child(
+                    gpui::div()
+                        .flex()
+                        .gap_3()
                         .text_size(px(11.0))
-                        .text_color(gpui::rgb(0x8f7fe8))
-                        .child(if open { "▾" } else { "▸" }.to_string()),
+                        .font_family(crate::theme::MONO)
+                        .text_color(crate::theme::MUTED)
+                        .child(gpui::div().child(format!("{}ms", sub.duration_ms)))
+                        .child(gpui::div().child(format!("{} tokens", sub.total_tokens))),
                 )
                 .child(
                     gpui::div()
-                        .text_size(px(12.0))
-                        .text_color(if is_error {
-                            gpui::rgb(0xf7768e)
-                        } else {
-                            gpui::rgb(0xbb9af7)
-                        })
-                        .child(format!("⚙ {}", call.name)),
-                )
-                .child(
-                    gpui::div()
-                        .flex_1()
+                        .id("open-subagent-link")
                         .text_size(px(11.0))
-                        .text_color(gpui::rgb(0x77777f))
-                        .text_ellipsis()
-                        .overflow_hidden()
-                        .child(crate::tool_render::arg_preview(
-                            &call.name,
-                            &call.input_json,
-                        )),
-                )
-                .children(if is_error {
-                    Some(
-                        gpui::div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(0xf7768e))
-                            .child("error".to_string()),
-                    )
-                } else {
-                    None
-                })
-                .on_click(move |_event, window, _cx| {
-                    ui_header.toggle_open(&key_header);
-                    window.refresh();
-                }),
+                        .font_family(crate::theme::MONO)
+                        .text_color(gpui::rgb(0x7aa2f7))
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(gpui::rgb(0xbb9af7)))
+                        .child("Open subagent \u{2192}")
+                        .on_click(move |_event, window, cx| {
+                            on_open(agent_id.clone(), window, cx);
+                        }),
+                ),
         );
+        if !output.is_empty() {
+            let out_lines: Vec<String> = output.split('\n').map(str::to_string).collect();
+            card = card.child(code_block("Result", &out_lines, out_lines.len() > 12));
+        }
+        return card;
+    }
+
+    // Collapsed header row: chevron + tool name + arg preview (+ error chip).
+    // Clicking expands the card body (Vue toolcall-toggle parity).
+    let ui_header = ui.clone();
+    let key_header = key.clone();
+    let mut card = base_tool_card(call, is_error).child(
+        gpui::div()
+            .id(gpui::SharedString::from(format!("{}-toggle", call.id)))
+            .flex()
+            .gap_2()
+            .items_center()
+            .w_full()
+            .cursor_pointer()
+            .hover(|s| s.opacity(0.85))
+            .child(
+                gpui::div()
+                    .text_size(px(11.0))
+                    .text_color(gpui::rgb(0x8f7fe8))
+                    .child(if open { "▾" } else { "▸" }.to_string()),
+            )
+            .child(
+                gpui::div()
+                    .text_size(px(12.0))
+                    .text_color(if is_error {
+                        gpui::rgb(0xf7768e)
+                    } else {
+                        gpui::rgb(0xbb9af7)
+                    })
+                    .child(format!("⚙ {}", call.name)),
+            )
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .text_size(px(11.0))
+                    .text_color(gpui::rgb(0x77777f))
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .child(crate::tool_render::arg_preview(
+                        &call.name,
+                        &call.input_json,
+                    )),
+            )
+            .children(if is_error {
+                Some(
+                    gpui::div()
+                        .text_size(px(10.0))
+                        .text_color(gpui::rgb(0xf7768e))
+                        .child("error".to_string()),
+                )
+            } else {
+                None
+            })
+            .on_click(move |_event, window, _cx| {
+                ui_header.toggle_open(&key_header);
+                window.refresh();
+            }),
+    );
 
     if !open {
         return card;
@@ -1311,4 +1432,200 @@ fn workflow_agent_groups(agents: &[crate::timeline::WorkflowAgentRow]) -> Vec<gp
         out.push(group.into_any_element());
     }
     out
+}
+
+// ---- Subagent detail (Vue SubagentDetail parity; #54) ---------------------
+
+pub type SubagentBackFn = Rc<dyn Fn(&mut gpui::Window, &mut App) + 'static>;
+
+/// The subagent timeline page: eyebrow + agent id + message count, then the
+/// agent's visible messages (thinking/meta disclosures and tool cards,
+/// reusing the session timeline's row renderers).
+#[derive(IntoElement)]
+pub struct SubagentDetailView {
+    pub agent_id: String,
+    pub messages: Rc<Vec<crate::timeline::TimelineMessage>>,
+    pub home: Rc<std::path::PathBuf>,
+    pub focus: FocusHandle,
+    pub ui: Rc<TimelineUiState>,
+    pub on_back: SubagentBackFn,
+}
+
+impl RenderOnce for SubagentDetailView {
+    fn render(self, _window: &mut gpui::Window, _cx: &mut App) -> impl IntoElement {
+        let on_back = self.on_back.clone();
+        let home = self.home.clone();
+        let ui = self.ui.clone();
+        let count = self.messages.len();
+
+        let mut column = gpui::div()
+            .id("subagent-scroll")
+            .track_focus(&self.focus)
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        for message in self.messages.iter() {
+            column = column.child(subagent_message_row(message, &ui, &home));
+        }
+
+        gpui::div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .bg(crate::theme::BG_2)
+            .overflow_hidden()
+            .child(
+                gpui::div()
+                    .px(px(24.0))
+                    .py(px(16.0))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(crate::theme::HAIRLINE)
+                    .child(
+                        gpui::div().flex().items_center().gap_2().child(
+                            gpui::div()
+                                .id("subagent-back")
+                                .text_size(px(13.0))
+                                .text_color(gpui::rgb(0x7aa2f7))
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(gpui::rgb(0xbb9af7)))
+                                .child("← Back to session")
+                                .on_click(move |_event, window, cx| {
+                                    on_back(window, cx);
+                                }),
+                        ),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_size(px(10.0))
+                            .font_family(crate::theme::MONO)
+                            .text_color(crate::theme::MUTED)
+                            .child("SUBAGENT"),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_size(px(16.0))
+                            .font_family(crate::theme::MONO)
+                            .text_color(crate::theme::FG)
+                            .child(self.agent_id.clone()),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_size(px(11.0))
+                            .font_family(crate::theme::MONO)
+                            .text_color(crate::theme::MUTED)
+                            .child(format!("{count} messages")),
+                    ),
+            )
+            .child(column)
+    }
+}
+
+/// One subagent message row (simplified session row: role header + body +
+/// tool calls; thinking/meta disclosures reuse the ui state).
+fn subagent_message_row(
+    message: &crate::timeline::TimelineMessage,
+    ui: &Rc<TimelineUiState>,
+    home: &Rc<std::path::PathBuf>,
+) -> gpui::AnyElement {
+    // Nested subagent links are not navigable from the subagent page (the
+    // Vue original also does not nest); a no-op keeps the signature shared.
+    let subagent_noop: TimelineSubagentFn = std::rc::Rc::new(|_id, _window, _cx| {});
+    let is_user = message.r#type == "user";
+    let role = if is_user { "Prompt" } else { "Assistant" };
+    let timestamp = message.timestamp.clone().unwrap_or_default();
+
+    let mut column = gpui::div().flex().flex_col().gap_2();
+
+    // Thinking / meta disclosures.
+    let disclosure_key = if message.content_type.as_deref() == Some("thinking") {
+        Some(format!("sub-thinking:{}", message.uuid))
+    } else if message.is_meta {
+        Some(format!("sub-meta:{}", message.uuid))
+    } else {
+        None
+    };
+    if let Some(key) = disclosure_key {
+        let label = if message.is_meta {
+            "System"
+        } else {
+            "Thinking"
+        };
+        let preview = message
+            .text
+            .as_deref()
+            .map(strip_html_tags)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(80).collect());
+        column = column.child(disclosure_toggle(
+            gpui::SharedString::from(format!("sub-toggle-{key}")),
+            ui.clone(),
+            key.clone(),
+            label,
+            preview,
+        ));
+        if ui.is_open(&key) {
+            if let Some(text) = message.text.as_deref().filter(|text| !text.is_empty()) {
+                column = column.child(
+                    gpui::div()
+                        .text_size(px(12.0))
+                        .text_color(gpui::rgb(0x9a9aa5))
+                        .line_height(gpui::relative(1.5))
+                        .child(markdown_body(text, px(12.0), &message.cwd, home)),
+                );
+            }
+        }
+    } else if let Some(text) = message.text.as_deref().filter(|text| !text.is_empty()) {
+        column = column.child(gpui::div().text_size(px(13.0)).child(markdown_body(
+            text,
+            px(13.0),
+            &message.cwd,
+            home,
+        )));
+    } else if message.tool_calls.is_empty() {
+        column = column.child(
+            gpui::div()
+                .text_size(px(12.0))
+                .text_color(crate::theme::MUTED)
+                .child("(no text content)"),
+        );
+    }
+
+    for call in &message.tool_calls {
+        column = column.child(tool_call_view(call, ui, &subagent_noop.clone()));
+    }
+
+    gpui::div()
+        .id(gpui::SharedString::from(message.uuid.clone()))
+        .w_full()
+        .px(px(24.0))
+        .py(px(10.0))
+        .flex()
+        .flex_col()
+        .gap_2()
+        .border_b_1()
+        .border_color(crate::theme::HAIRLINE)
+        .child(
+            gpui::div()
+                .w_full()
+                .flex()
+                .justify_between()
+                .text_size(px(11.0))
+                .text_color(crate::theme::MUTED)
+                .child(
+                    gpui::div()
+                        .text_color(if is_user {
+                            gpui::rgb(0x7aa2f7)
+                        } else {
+                            gpui::rgb(0x9ece6a)
+                        })
+                        .child(role),
+                )
+                .child(gpui::div().child(timestamp)),
+        )
+        .child(column)
+        .into_any_element()
 }

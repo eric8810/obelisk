@@ -17,9 +17,21 @@ gpui = { package = "fc-gpui", version = "0.9", default-features = false, feature
   "font-kit",
   "wayland",
   "x11",
+  # Window::render_to_image (scene readback) is gated behind this feature;
+  # the recap card export (R11) needs it in production.
+  "test-support",
 ] }
 fc-ui = { version = "0.8", features = ["markdown", "image-default-formats"] }
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 futures = "0.3"
 rusqlite = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
+
+[[bench]]
+name = "markdown_parse"
+harness = false
+
+[dev-dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }

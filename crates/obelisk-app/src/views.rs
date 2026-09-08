@@ -50,7 +50,20 @@ pub struct SettingsView {
     pub index_path: String,
     /// Fired when "Reveal" is clicked (opens the file manager).
     pub on_reveal: RebuildFn,
+    /// Current recap directory (Settings #10).
+    pub recap_dir: String,
+    /// Input holding a new recap directory (empty = default).
+    pub recap_input: gpui::Entity<adabraka_ui::components::input_state::InputState>,
+    /// Save the recap directory (Settings #10).
+    pub on_save_recap_dir: SettingsSaveRecapDirFn,
+    /// Open the platform directory picker ("recap" or a provider id).
+    pub on_browse: SettingsBrowseFn,
 }
+
+/// Save the recap directory (Settings #10).
+pub type SettingsSaveRecapDirFn = Rc<dyn Fn(&str, &mut gpui::Window, &mut App) + 'static>;
+/// Open the platform directory picker (Settings #4).
+pub type SettingsBrowseFn = Rc<dyn Fn(&str, &mut gpui::Window, &mut App) + 'static>;
 
 /// Fired when the user clicks "Rebuild index".
 pub type RebuildFn = Rc<dyn Fn(&mut gpui::Window, &mut App) + 'static>;
@@ -173,7 +186,25 @@ impl RenderOnce for SettingsView {
                                             let path = input.read(cx).content().to_string();
                                             on_save(id, path.trim(), window, cx);
                                         }),
-                                ),
+                                )
+                                .child({
+                                    let on_browse = self.on_browse.clone();
+                                    gpui::div()
+                                        .id(gpui::SharedString::from(format!("browse-root-{id}")))
+                                        .px_3()
+                                        .py_1p5()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(crate::theme::HAIRLINE)
+                                        .text_size(crate::theme::TEXT_SM)
+                                        .text_color(crate::theme::MUTED)
+                                        .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
+                                        .cursor_pointer()
+                                        .child("Browse")
+                                        .on_click(move |_event, window, cx| {
+                                            on_browse(id, window, cx);
+                                        })
+                                }),
                         ),
                 );
         }
@@ -288,6 +319,83 @@ impl RenderOnce for SettingsView {
                                     .text_color(color)
                                     .child(status)
                             })),
+                    ),
+            )
+            // Recap directory (Settings #10).
+            .child(
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        gpui::div()
+                            .text_size(px(13.0))
+                            .text_color(crate::theme::FG)
+                            .child("Recap directory"),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_size(px(11.0))
+                            .text_color(crate::theme::MUTED)
+                            .child(
+                                "Where weekly recap reports are read from. Empty uses the \
+                                 default (~/.obelisk/recap).",
+                            ),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_size(px(11.0))
+                            .font_family(crate::theme::MONO)
+                            .text_color(crate::theme::MUTED)
+                            .child(self.recap_dir.clone()),
+                    )
+                    .child(
+                        gpui::div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(gpui::div().flex_1().child(
+                                Input::new(&self.recap_input)
+                                    .placeholder("custom directory (empty = default)"),
+                            ))
+                            .child({
+                                let on_save = self.on_save_recap_dir.clone();
+                                let recap_input = self.recap_input.clone();
+                                gpui::div()
+                                    .id("save-recap-dir")
+                                    .px_3()
+                                    .py_1p5()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(crate::theme::HAIRLINE_STRONG)
+                                    .text_size(crate::theme::TEXT_SM)
+                                    .text_color(crate::theme::FG_2)
+                                    .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
+                                    .cursor_pointer()
+                                    .child("Save")
+                                    .on_click(move |_event, window, cx| {
+                                        let path = recap_input.read(cx).content().to_string();
+                                        on_save(path.trim(), window, cx);
+                                    })
+                            })
+                            .child({
+                                let on_browse = self.on_browse.clone();
+                                gpui::div()
+                                    .id("browse-recap-dir")
+                                    .px_3()
+                                    .py_1p5()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(crate::theme::HAIRLINE)
+                                    .text_size(crate::theme::TEXT_SM)
+                                    .text_color(crate::theme::MUTED)
+                                    .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
+                                    .cursor_pointer()
+                                    .child("Browse")
+                                    .on_click(move |_event, window, cx| {
+                                        on_browse("recap", window, cx);
+                                    })
+                            }),
                     ),
             )
             // About: version + manual rebuild (P0-8).
@@ -1683,7 +1791,10 @@ pub type RecapCardFn = Rc<dyn Fn(usize, &mut gpui::Window, &mut App) + 'static>;
 /// Cover/Path/Vibe/Workflow/Closing cards with archetype theming).
 #[derive(IntoElement)]
 pub struct RecapView {
-    pub filenames: Rc<Vec<String>>,
+    /// Timeline list entries (R1: year groups, persona, metrics).
+    pub entries: Rc<Vec<crate::data::RecapEntry>>,
+    /// Kind filter: "all" | "weekly" | "monthly".
+    pub kind_filter: String,
     /// Parsed JSON of the selected recap, when any.
     pub selected: Option<serde_json::Value>,
     /// Name of the selected file (for list highlight).
@@ -1700,46 +1811,200 @@ pub struct RecapView {
     pub on_copy_command: RecapCopyCommandFn,
     /// Toggle the Generate panel (R3).
     pub on_toggle_generate: RecapGenerateFn,
+    /// Kind filter changed (R1): "all" | "weekly" | "monthly".
+    pub on_kind_filter: RecapKindFilterFn,
+    /// Export the visible card as a PNG (R11).
+    pub on_export: RecapExportFn,
 }
+
+/// Kind filter changed (R1).
+pub type RecapKindFilterFn = Rc<dyn Fn(String, &mut gpui::Window, &mut App) + 'static>;
+
+/// Export one recap card: (card index, copy-to-clipboard instead of file).
+pub type RecapExportFn = Rc<dyn Fn(usize, bool, &mut gpui::Window, &mut App) + 'static>;
 
 impl RenderOnce for RecapView {
     fn render(self, _window: &mut gpui::Window, _cx: &mut App) -> impl IntoElement {
-        let count = self.filenames.len();
         let palette = crate::theme::archetype(&self.archetype);
 
-        // Left rail: recap list.
-        let mut rows = gpui::div().flex().flex_col();
-        for (ix, name) in self.filenames.iter().enumerate() {
-            let is_selected = self.selected_name.as_deref() == Some(name.as_str());
-            let on_select = self.on_select.clone();
-            rows = rows.child(
+        // Kind filter (Vue route query kind; desktop chips).
+        let kind_chips = ["all", "weekly", "monthly"];
+        let mut chips_row = gpui::div().flex().gap_2().px(px(16.0)).pb(px(8.0));
+        for kind in kind_chips {
+            let is_active = self.kind_filter == kind;
+            let on_kind = self.on_kind_filter.clone();
+            chips_row = chips_row.child(
                 gpui::div()
-                    .id(gpui::SharedString::from(name.clone()))
-                    .px(px(24.0))
-                    .py(px(8.0))
-                    .border_b_1()
-                    .border_color(crate::theme::HAIRLINE)
-                    .bg(if is_selected {
-                        crate::theme::SURFACE
+                    .id(gpui::SharedString::from(format!("recap-kind-{kind}")))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(if is_active {
+                        crate::theme::ACCENT_SOFT
                     } else {
-                        gpui::rgba(0x00000000)
+                        crate::theme::HAIRLINE
                     })
-                    .hover(|s| s.bg(crate::theme::SURFACE))
+                    .text_size(px(10.0))
+                    .font_family(crate::theme::MONO)
+                    .text_color(if is_active {
+                        crate::theme::FG
+                    } else {
+                        crate::theme::MUTED
+                    })
                     .cursor_pointer()
+                    .hover(|s| s.bg(crate::theme::SURFACE))
+                    .child(kind.to_string())
+                    .on_click(move |_e, _window, cx| on_kind(kind.to_string(), _window, cx)),
+            );
+        }
+
+        // Filtered entries, then year groups (Vue byYear, desc).
+        let filtered: Vec<&crate::data::RecapEntry> = self
+            .entries
+            .iter()
+            .filter(|entry| self.kind_filter == "all" || entry.kind == self.kind_filter)
+            .collect();
+        let count = filtered.len();
+        let mut rows = gpui::div().flex().flex_col();
+        let mut year_start = 0usize;
+        while year_start < filtered.len() {
+            let year = filtered[year_start].year.clone();
+            let mut year_end = year_start;
+            while year_end < filtered.len() && filtered[year_end].year == year {
+                year_end += 1;
+            }
+            let items = &filtered[year_start..year_end];
+            rows = rows.child(
+                // Year section head.
+                gpui::div()
+                    .flex()
+                    .justify_between()
+                    .px(px(16.0))
+                    .py(px(8.0))
                     .child(
                         gpui::div()
-                            .text_size(crate::theme::TEXT_BASE)
-                            .text_color(if is_selected {
-                                crate::theme::FG
-                            } else {
-                                crate::theme::FG_2
-                            })
-                            .child(name.clone()),
+                            .text_size(px(12.0))
+                            .font_family(crate::theme::MONO)
+                            .text_color(crate::theme::FG_2)
+                            .child(year.clone()),
                     )
-                    .on_click(move |_event, window, cx| {
-                        on_select(ix, window, cx);
-                    }),
+                    .child(
+                        gpui::div()
+                            .text_size(px(10.0))
+                            .font_family(crate::theme::MONO)
+                            .text_color(crate::theme::MUTED)
+                            .child(format!(
+                                "{} recap{}",
+                                items.len(),
+                                if items.len() == 1 { "" } else { "s" }
+                            )),
+                    ),
             );
+            for entry in items {
+                let is_selected = self.selected_name.as_deref() == Some(entry.filename.as_str());
+                let on_select = self.on_select.clone();
+                // Index by filename position in the full list (on_select
+                // takes the position in self.entries).
+                let full_ix = self
+                    .entries
+                    .iter()
+                    .position(|e| e.filename == entry.filename)
+                    .unwrap_or(0);
+                let node_color = crate::theme::archetype(&entry.archetype).tc;
+                rows = rows.child(
+                    gpui::div()
+                        .id(gpui::SharedString::from(entry.filename.clone()))
+                        .flex()
+                        .gap_3()
+                        .items_start()
+                        .px(px(16.0))
+                        .py(px(8.0))
+                        .rounded_md()
+                        .bg(if is_selected {
+                            crate::theme::SURFACE
+                        } else {
+                            gpui::rgba(0x00000000)
+                        })
+                        .hover(|s| s.bg(crate::theme::SURFACE))
+                        .cursor_pointer()
+                        // Timeline node (archetype-colored).
+                        .child(
+                            gpui::div()
+                                .mt(px(4.0))
+                                .w(px(10.0))
+                                .h(px(10.0))
+                                .rounded_full()
+                                .bg(node_color),
+                        )
+                        .child(
+                            gpui::div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    // period label · date range.
+                                    gpui::div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            gpui::div()
+                                                .text_size(px(12.0))
+                                                .font_family(crate::theme::MONO)
+                                                .text_color(crate::theme::FG_2)
+                                                .child(entry.period_label.clone()),
+                                        )
+                                        .child(
+                                            gpui::div()
+                                                .text_size(px(11.0))
+                                                .font_family(crate::theme::MONO)
+                                                .text_color(crate::theme::MUTED)
+                                                .child(entry.date_range.clone()),
+                                        ),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .text_size(crate::theme::TEXT_BASE)
+                                        .text_color(if is_selected {
+                                            crate::theme::FG
+                                        } else {
+                                            crate::theme::FG_2
+                                        })
+                                        .child(entry.persona_title.clone()),
+                                )
+                                .child(if entry.persona_claim.is_empty() {
+                                    gpui::div().into_any_element()
+                                } else {
+                                    gpui::div()
+                                        .text_size(px(11.0))
+                                        .text_color(crate::theme::MUTED)
+                                        .child(entry.persona_claim.clone())
+                                        .into_any_element()
+                                })
+                                .child(
+                                    gpui::div()
+                                        .flex()
+                                        .gap_2()
+                                        .text_size(px(10.5))
+                                        .font_family(crate::theme::MONO)
+                                        .text_color(crate::theme::MUTED)
+                                        .child(
+                                            gpui::div()
+                                                .child(format!("{} sessions", entry.sessions)),
+                                        )
+                                        .child(gpui::div().child("·"))
+                                        .child(
+                                            gpui::div().child(format!("{} tokens", entry.tokens)),
+                                        ),
+                                ),
+                        )
+                        .on_click(move |_event, window, cx| {
+                            on_select(full_ix, window, cx);
+                        }),
+                );
+            }
+            year_start = year_end;
         }
 
         // Detail: the five-card stack for the selected recap.
@@ -1748,7 +2013,7 @@ impl RenderOnce for RecapView {
             Some(value) => recap_card_stack(value, self.card_ix, palette, &self.on_card),
         };
 
-        let nav = recap_nav(self.card_ix, palette, &self.on_card);
+        let nav = recap_nav(self.card_ix, palette, &self.on_card, &self.on_export);
 
         gpui::div()
             .flex_1()
@@ -1873,7 +2138,7 @@ impl RenderOnce for RecapView {
 }
 
 /// Card stage: the visible card + prev/next dots nav (Vue card stack).
-fn recap_card_stack(
+pub fn recap_card_stack(
     value: &serde_json::Value,
     card_ix: usize,
     palette: &crate::theme::ArchetypePalette,
@@ -2441,6 +2706,7 @@ fn recap_nav(
     card_ix: usize,
     palette: &crate::theme::ArchetypePalette,
     on_card: &RecapCardFn,
+    on_export: &RecapExportFn,
 ) -> impl IntoElement + use<> {
     let labels = ["Cover", "Path", "Vibe", "Workflow", "Closing"];
     let mut dots = gpui::div().flex().items_center().gap(px(14.0));
@@ -2558,6 +2824,41 @@ fn recap_nav(
         .child(prev)
         .child(dots)
         .child(next)
+        .child(gpui::div().w(px(16.0)))
+        .child({
+            let on_export = on_export.clone();
+            gpui::div()
+                .id("recap-export-png")
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(palette.soft)
+                .text_size(px(10.0))
+                .font_family(crate::theme::MONO)
+                .text_color(palette.tc)
+                .cursor_pointer()
+                .hover(|s| s.bg(palette.soft))
+                .child("Export PNG")
+                .on_click(move |_e, _window, cx| on_export(card_ix, false, _window, cx))
+        })
+        .child({
+            let on_export = on_export.clone();
+            gpui::div()
+                .id("recap-copy-image")
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(palette.soft)
+                .text_size(px(10.0))
+                .font_family(crate::theme::MONO)
+                .text_color(palette.tc)
+                .cursor_pointer()
+                .hover(|s| s.bg(palette.soft))
+                .child("Copy image")
+                .on_click(move |_e, _window, cx| on_export(card_ix, true, _window, cx))
+        })
 }
 
 // ---- shared bits ----

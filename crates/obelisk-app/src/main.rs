@@ -105,13 +105,54 @@ impl gpui::http_client::HttpClient for LocalImageHttpClient {
     }
 }
 
+/// An open subagent timeline (Vue SubagentDetail route; #54).
+struct SubagentScreen {
+    agent_id: String,
+    /// Parent session id (kept for deep links back to the parent).
+    #[allow(dead_code)]
+    parent_session_id: String,
+    messages: std::rc::Rc<Vec<crate::timeline::TimelineMessage>>,
+    focus: gpui::FocusHandle,
+    ui: std::rc::Rc<crate::timeline_view::TimelineUiState>,
+}
+
+/// The offscreen card surface used by export (R11): renders exactly one
+/// recap card on the dark stage background.
+struct OffscreenRecapCard {
+    value: serde_json::Value,
+    card_ix: usize,
+    palette: &'static crate::theme::ArchetypePalette,
+    on_card: crate::views::RecapCardFn,
+}
+
+impl gpui::Render for OffscreenRecapCard {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        gpui::div()
+            .size_full()
+            .bg(gpui::rgba(0x0a0b14ff))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(crate::views::recap_card_stack(
+                &self.value,
+                self.card_ix,
+                self.palette,
+                &self.on_card,
+            ))
+    }
+}
+
 // Global view shortcuts (Vue resolveGlobalShortcut: Cmd/Ctrl+1/2/3).
 gpui::actions!(
     obelisk_app,
     [
         GlobalOpenSessions,
         GlobalOpenActiveMemories,
-        GlobalOpenArchivedMemories
+        GlobalOpenArchivedMemories,
+        GlobalOpenRecap,
+        TextScaleUp,
+        TextScaleDown,
+        TextScaleReset
     ]
 );
 
@@ -128,7 +169,9 @@ struct ObeliskApp {
     selected_memory: Option<usize>,
     usage: Option<crate::data::UsageStats>,
     overview: Option<crate::data::OverviewStats>,
-    recaps: Option<std::rc::Rc<Vec<String>>>,
+    recaps: Option<std::rc::Rc<Vec<crate::data::RecapEntry>>>,
+    /// Recap list kind filter (R1): all/weekly/monthly.
+    recap_kind_filter: String,
     selected_recap: Option<serde_json::Value>,
     selected_recap_name: Option<String>,
     /// Visible recap card (0=Cover … 4=Closing) + active archetype key
@@ -151,6 +194,8 @@ struct ObeliskApp {
     memory_sort_desc: bool,
     /// Pending memory undo (label + action target + expiry).
     memory_undo: Option<MemoryUndo>,
+    /// Open subagent timeline, if any (Sessions view; #54).
+    subagent: Option<SubagentScreen>,
     /// Memory search box + focus target for the keyboard layer.
     memory_search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
     memory_focus: gpui::FocusHandle,
@@ -163,6 +208,10 @@ struct ObeliskApp {
     /// quiet-session fold (M4.5).
     sessions_sort_desc: bool,
     show_noise_sessions: bool,
+    /// Timeline font scale (parity #5): one of 6 steps.
+    text_scale: f32,
+    /// Transient toast line (font-scale feedback) + expiry.
+    toast: Option<(String, std::time::Instant)>,
     /// Session-list search box state (Vue: `/` focuses, filters by
     /// title/project/branch client-side). Observed → `search_query`.
     search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
@@ -188,6 +237,8 @@ struct TimelineScreenState {
     /// Message uuid receiving a temporary focus highlight (traceability
     /// jumps), with its expiry.
     focus_highlight: Option<(String, std::time::Instant)>,
+    /// The FTS query that produced the focus jump (parity #52).
+    matched_query: Option<String>,
 }
 
 /// Per-session reading position, restored when the session is reopened
@@ -303,6 +354,7 @@ impl ObeliskApp {
             usage: None,
             overview: None,
             recaps: None,
+            recap_kind_filter: "all".to_string(),
             selected_recap: None,
             selected_recap_name: None,
             recap_card_ix: 0,
@@ -314,6 +366,8 @@ impl ObeliskApp {
             search_state,
             sessions_sort_desc: true,
             show_noise_sessions: false,
+            text_scale: 1.0,
+            toast: None,
             search_query: String::new(),
             activity_tab: crate::views::ActivityTab::Daily,
             activity_day: None,
@@ -326,6 +380,7 @@ impl ObeliskApp {
             memory_selection: std::collections::HashSet::new(),
             memory_sort_desc: true,
             memory_undo: None,
+            subagent: None,
             memory_search_state,
             memory_focus,
         }
@@ -341,6 +396,18 @@ impl ObeliskApp {
     ) {
         self.view = view;
         self.timeline = None;
+        // Navigation side effects (parity #16): leaving the session list
+        // clears the transient query; entering Memory clears the project
+        // filter so the memory list is never scoped by a sessions filter.
+        if view != crate::views::AppView::Sessions {
+            self.search_query.clear();
+            self.search_hits.clear();
+        }
+        if view == crate::views::AppView::Memory {
+            self.selected_project = None;
+            self.memory_cursor = None;
+            self.memory_selection.clear();
+        }
         match view {
             crate::views::AppView::Sessions => {
                 window.focus(&self.sessions_focus);
@@ -360,7 +427,13 @@ impl ObeliskApp {
                 self.activity_months = 1;
             }
             crate::views::AppView::Recap => {
-                self.recaps = Some(std::rc::Rc::new(crate::data::list_recaps(&self.home)));
+                let entries = crate::data::list_recap_entries(&self.home);
+                eprintln!(
+                    "obelisk debug: recap view loaded {} entries from {}",
+                    entries.len(),
+                    crate::data::recap_dir(&self.home).display()
+                );
+                self.recaps = Some(std::rc::Rc::new(entries));
                 self.selected_recap = None;
             }
             crate::views::AppView::Settings => {
@@ -405,7 +478,7 @@ impl ObeliskApp {
         let filename = self
             .recaps
             .as_ref()
-            .and_then(|names| names.get(ix).cloned());
+            .and_then(|entries| entries.get(ix).map(|entry| entry.filename.clone()));
         self.selected_recap = filename
             .as_ref()
             .and_then(|name| crate::data::read_recap(&self.home, name));
@@ -475,6 +548,7 @@ impl ObeliskApp {
                     focus,
                     ui_state: reader.ui_state,
                     focus_highlight: None,
+                    matched_query: None,
                 });
                 cx.notify();
                 return;
@@ -488,6 +562,7 @@ impl ObeliskApp {
                 focus,
                 ui_state: std::rc::Rc::new(timeline_view::TimelineUiState::new()),
                 focus_highlight: None,
+                matched_query: None,
             });
         }
         cx.notify();
@@ -670,10 +745,128 @@ impl ObeliskApp {
 
     /// Open a session scrolled to (and briefly highlighting) one message —
     /// the memory "View conversation" traceability path.
+    /// Export one recap card as a PNG (R11): render the card in an
+    /// offscreen X11 window, read the frame back, save or copy it.
+    /// Step the timeline font scale through the 6-step ladder and toast.
+    fn adjust_text_scale(&mut self, direction: i32, cx: &mut Context<Self>) {
+        const STEPS: [f32; 6] = [0.85, 0.93, 1.0, 1.1, 1.2, 1.35];
+        let current = STEPS
+            .iter()
+            .position(|step| (step - self.text_scale).abs() < 0.001)
+            .unwrap_or(2) as i32;
+        let next = (current + direction).clamp(0, STEPS.len() as i32 - 1) as usize;
+        self.text_scale = STEPS[next];
+        self.toast = Some((
+            format!("Font size: {}%", (STEPS[next] * 100.0).round() as u32),
+            std::time::Instant::now(),
+        ));
+        cx.notify();
+    }
+
+    fn export_recap_card(&mut self, card_ix: usize, copy: bool, cx: &mut Context<Self>) {
+        let Some(value) = self.selected_recap.clone() else {
+            return;
+        };
+        let archetype = self.recap_archetype.clone();
+        let home = self.home.clone();
+        let filename = self
+            .selected_recap_name
+            .clone()
+            .unwrap_or_else(|| "recap".to_string())
+            .trim_end_matches(".json")
+            .to_string();
+
+        // Offscreen window (X11 honors outside-screen coordinates).
+        let options = gpui::WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                origin: gpui::Point::new(gpui::px(-2600.0), gpui::px(-2600.0)),
+                size: gpui::size(gpui::px(560.0), gpui::px(720.0)),
+            })),
+            ..Default::default()
+        };
+        let Ok(handle) = cx.open_window(options, move |_window, cx| {
+            let palette = crate::theme::archetype(&archetype);
+            let on_card: crate::views::RecapCardFn = std::rc::Rc::new(|_ix, _window, _cx| {});
+            let value = value.clone();
+            cx.new(move |_cx| OffscreenRecapCard {
+                value,
+                card_ix,
+                palette,
+                on_card,
+            })
+        }) else {
+            return;
+        };
+
+        cx.spawn(async move |_this, cx| {
+            // Let the first frame render and settle.
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(700))
+                .await;
+            let result: anyhow::Result<anyhow::Result<()>> =
+                handle.update(cx, |_entity, window, cx| {
+                    let image = window.render_to_image()?;
+                    if copy {
+                        // PNG-encode into the clipboard image entry.
+                        let mut bytes = std::io::Cursor::new(Vec::new());
+                        image
+                            .write_to(&mut bytes, image::ImageFormat::Png)
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let item = gpui::ClipboardItem::new_image(&gpui::Image::new(
+                            gpui::ImageFormat::Png,
+                            bytes.into_inner(),
+                        ));
+                        cx.write_to_clipboard(item);
+                    } else {
+                        let dir = crate::data::recap_dir(&home).join("exports");
+                        std::fs::create_dir_all(&dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let path = dir.join(format!("{filename}-card-{}.png", card_ix + 1));
+                        image.save(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    }
+                    Ok(())
+                });
+            if let Ok(Err(error)) = result {
+                eprintln!("obelisk: recap card export failed: {error}");
+            }
+            // Close the offscreen window.
+            let _ = handle.update(cx, |_entity, window, _cx| {
+                window.remove_window();
+            });
+        })
+        .detach();
+    }
+
+    /// Open one subagent's timeline (Vue SubagentDetail navigation).
+    fn open_subagent(&mut self, agent_id: String, _window: &mut Window, cx: &mut Context<Self>) {
+        let parent_session_id = self
+            .timeline
+            .as_ref()
+            .map(|screen| screen.session_id.clone())
+            .unwrap_or_default();
+        let Some((_, messages)) = crate::data::load_subagent_detail(&self.home, &agent_id) else {
+            return;
+        };
+        self.subagent = Some(SubagentScreen {
+            agent_id,
+            parent_session_id,
+            messages: std::rc::Rc::new(messages),
+            focus: cx.focus_handle(),
+            ui: std::rc::Rc::new(crate::timeline_view::TimelineUiState::new()),
+        });
+        cx.notify();
+    }
+
+    /// Close the subagent view (Back).
+    fn close_subagent(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.subagent = None;
+        cx.notify();
+    }
+
     fn open_session_focused(
         &mut self,
         session_id: String,
         focus_uuid: String,
+        matched_query: Option<String>,
         home: std::path::PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -694,6 +887,7 @@ impl ObeliskApp {
                         focus_uuid.clone(),
                         std::time::Instant::now() + std::time::Duration::from_secs(2),
                     ));
+                    screen.matched_query = matched_query.filter(|q| !q.is_empty());
                 }
             }
         }
@@ -865,6 +1059,28 @@ impl gpui::Render for ObeliskApp {
             .h_full()
             .w_full()
             .font_family(".SystemUIFont")
+            .on_action(
+                cx.listener(|this: &mut ObeliskApp, _: &TextScaleUp, _window, cx| {
+                    this.adjust_text_scale(1, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut ObeliskApp, _: &TextScaleDown, _window, cx| {
+                    this.adjust_text_scale(-1, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut ObeliskApp, _: &TextScaleReset, _window, cx| {
+                    this.text_scale = 1.0;
+                    this.toast = Some(("Font size: 100%".to_string(), std::time::Instant::now()));
+                    cx.notify();
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut ObeliskApp, _: &GlobalOpenRecap, _window, cx| {
+                    this.select_view(crate::views::AppView::Recap, _window, cx);
+                }),
+            )
             .on_action(cx.listener(
                 |this: &mut ObeliskApp, _: &GlobalOpenSessions, _window, cx| {
                     this.select_view(crate::views::AppView::Sessions, _window, cx);
@@ -970,7 +1186,7 @@ impl gpui::Render for ObeliskApp {
                                 let home = home.clone();
                                 app_handle.update(cx, |app, cx| {
                                     app.open_session_focused(
-                                        session_id, focus_uuid, home, window, cx,
+                                        session_id, focus_uuid, None, home, window, cx,
                                     )
                                 });
                             })
@@ -1055,6 +1271,7 @@ impl gpui::Render for ObeliskApp {
                                 app.open_session_focused(
                                     session_id,
                                     String::new(),
+                                    None,
                                     home,
                                     _window,
                                     cx,
@@ -1088,7 +1305,8 @@ impl gpui::Render for ObeliskApp {
                     let archetype = self.recap_archetype.clone();
                     let card_ix = self.recap_card_ix;
                     crate::views::RecapView {
-                        filenames: self.recaps.clone().unwrap_or_default(),
+                        entries: self.recaps.clone().unwrap_or_default(),
+                        kind_filter: self.recap_kind_filter.clone(),
                         selected: self.selected_recap.clone(),
                         selected_name: self.selected_recap_name.clone(),
                         card_ix,
@@ -1100,6 +1318,23 @@ impl gpui::Render for ObeliskApp {
                         on_copy_command: std::rc::Rc::new(|command, _window, cx| {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(command));
                         }),
+                        on_kind_filter: {
+                            let kind_handle = cx.entity();
+                            std::rc::Rc::new(move |kind: String, _window, cx| {
+                                kind_handle.update(cx, |app, cx| {
+                                    app.recap_kind_filter = kind;
+                                    cx.notify();
+                                });
+                            })
+                        },
+                        on_export: {
+                            let export_handle = cx.entity();
+                            std::rc::Rc::new(move |card_ix: usize, copy: bool, _window, cx| {
+                                export_handle.update(cx, |app, cx| {
+                                    app.export_recap_card(card_ix, copy, cx);
+                                });
+                            })
+                        },
                         on_toggle_generate: {
                             let gen_handle = cx.entity();
                             std::rc::Rc::new(move |_window, cx| {
@@ -1232,46 +1467,185 @@ impl gpui::Render for ObeliskApp {
                             }
                         }),
                         status: self.settings_status.clone(),
+                        recap_dir: crate::data::recap_dir(&self.home).display().to_string(),
+                        recap_input: cx.new(adabraka_ui::components::input_state::InputState::new),
+                        on_save_recap_dir: {
+                            let save_handle = cx.entity();
+                            let home = self.home.clone();
+                            std::rc::Rc::new(move |dir: &str, _window, cx| {
+                                let result = crate::data::save_recap_dir(&home, dir);
+                                save_handle.update(cx, |app: &mut ObeliskApp, cx| {
+                                    match result {
+                                        Ok(()) => {
+                                            app.settings = Some(crate::data::load_settings(&home));
+                                            if app.view == crate::views::AppView::Recap {
+                                                app.recaps = Some(std::rc::Rc::new(
+                                                    crate::data::list_recap_entries(&home),
+                                                ));
+                                                app.selected_recap = None;
+                                            }
+                                        }
+                                        Err(error) => {
+                                            app.settings_status = Some(error);
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                        },
+                        on_browse: {
+                            let browse_handle = cx.entity();
+                            let home = self.home.clone();
+                            std::rc::Rc::new(move |target: &str, _window, cx| {
+                                let options = gpui::PathPromptOptions {
+                                    files: false,
+                                    directories: true,
+                                    multiple: false,
+                                    prompt: Some("Select directory".into()),
+                                };
+                                let receiver = cx.prompt_for_paths(options);
+                                let target = target.to_string();
+                                let home = home.clone();
+                                browse_handle.update(cx, |_app: &mut ObeliskApp, cx| {
+                                    cx.spawn(async move |this, cx| {
+                                        let Ok(Ok(Some(paths))) = receiver.await else {
+                                            return;
+                                        };
+                                        let Some(path) = paths.first() else {
+                                            return;
+                                        };
+                                        let path = path.display().to_string();
+                                        this.update(cx, |app, cx| {
+                                            if target == "recap" {
+                                                let result =
+                                                    crate::data::save_recap_dir(&home, &path);
+                                                if let Err(error) = result {
+                                                    app.settings_status = Some(error);
+                                                } else {
+                                                    app.settings =
+                                                        Some(crate::data::load_settings(&home));
+                                                    if app.view == crate::views::AppView::Recap {
+                                                        app.recaps = None;
+                                                        app.selected_recap = None;
+                                                    }
+                                                }
+                                            } else {
+                                                let result = crate::data::validate_provider_root(
+                                                    &home, &path,
+                                                )
+                                                .and_then(|()| {
+                                                    crate::data::save_provider_root(
+                                                        &home, &target, &path,
+                                                    )
+                                                });
+                                                match result {
+                                                    Ok(()) => {
+                                                        app.settings =
+                                                            Some(crate::data::load_settings(&home));
+                                                    }
+                                                    Err(error) => {
+                                                        app.settings_status = Some(error);
+                                                    }
+                                                }
+                                            }
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                    })
+                                    .detach();
+                                });
+                            })
+                        },
                         index_path: format!("{}/.obelisk/obelisk.sqlite", self.home.display()),
                         on_reveal: {
-                            let reveal_handle = cx.entity();
                             let home = self.home.clone();
                             std::rc::Rc::new(move |_window, cx| {
-                                reveal_handle.update(cx, |_app, _cx| {
-                                    // Open the file manager on the index dir
-                                    // (Vue showItemInFolder; Linux path).
-                                    let dir = home.join(".obelisk");
-                                    let _ =
-                                        std::process::Command::new("xdg-open").arg(&dir).spawn();
-                                });
+                                // Platform reveal (Vue showItemInFolder).
+                                let dir = home.join(".obelisk");
+                                cx.reveal_path(&dir);
                             })
                         },
                     }
                     .into_any_element()
                 }
             })
+            .when(
+                self.toast
+                    .as_ref()
+                    .is_some_and(|(_, until)| std::time::Instant::now() < *until),
+                |el| {
+                    if let Some((text, _)) = &self.toast {
+                        el.child(
+                            gpui::div()
+                                .id("toast")
+                                .absolute()
+                                .bottom_8()
+                                .left_1_2()
+                                .px_4()
+                                .py_2()
+                                .rounded_md()
+                                .bg(gpui::rgba(0x1a1b26f2))
+                                .border_1()
+                                .border_color(crate::theme::HAIRLINE_STRONG)
+                                .text_size(px(12.0))
+                                .font_family(crate::theme::MONO)
+                                .text_color(crate::theme::FG_2)
+                                .child(text.clone()),
+                        )
+                    } else {
+                        el
+                    }
+                },
+            )
     }
 }
 
 /// The sessions right panel: the open timeline, or the session list.
 fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyElement {
+    let project_labels = app.data.project_labels.clone();
+    let selected_project_slug = app.selected_project.clone();
     let sessions: Vec<session_list::SessionRow> = app
         .data
         .sessions_for(app.selected_project.as_deref())
         .into_iter()
-        .map(|s| session_list::SessionRow {
-            id: s.id,
-            title: s.title,
-            project: s.project,
-            source: s.source,
-            started_at: s.started_at,
-            ended_at: s.ended_at,
-            message_count: s.message_count,
-            git_branch: s.git_branch,
+        .map(|s| {
+            // Vue list #3: the project chip shows the label only while no
+            // project filter is active (the filter context is obvious).
+            let project = match &selected_project_slug {
+                Some(slug) if slug == &s.project => slug.clone(),
+                _ => project_labels
+                    .get(&s.project)
+                    .cloned()
+                    .unwrap_or_else(|| s.project.trim_matches('-').to_string()),
+            };
+            session_list::SessionRow {
+                id: s.id,
+                title: s.title,
+                project,
+                source: s.source,
+                started_at: s.started_at,
+                ended_at: s.ended_at,
+                message_count: s.message_count,
+                git_branch: s.git_branch,
+            }
         })
         .collect();
     let selected = app.selected_project.clone();
-    if let Some(screen) = &app.timeline {
+    if let Some(screen) = &app.subagent {
+        let app_handle = cx.entity();
+        let agent_id = screen.agent_id.clone();
+        crate::timeline_view::SubagentDetailView {
+            agent_id,
+            messages: screen.messages.clone(),
+            home: std::rc::Rc::new(app.home.clone()),
+            focus: screen.focus.clone(),
+            ui: screen.ui.clone(),
+            on_back: std::rc::Rc::new(move |window, cx| {
+                app_handle.update(cx, |app, cx| app.close_subagent(window, cx));
+            }),
+        }
+        .into_any_element()
+    } else if let Some(screen) = &app.timeline {
         let app_handle = cx.entity();
         let app_handle_refresh = cx.entity();
         timeline_view::TimelineView {
@@ -1289,6 +1663,16 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
             on_refresh: std::rc::Rc::new(move |window, cx| {
                 app_handle_refresh.update(cx, |app, cx| app.refresh_timeline(window, cx));
             }),
+            on_open_subagent: {
+                let sub_handle = cx.entity();
+                std::rc::Rc::new(move |agent_id: String, window, cx| {
+                    sub_handle.update(cx, |app, cx| {
+                        app.open_subagent(agent_id, window, cx);
+                    });
+                })
+            },
+            text_scale: app.text_scale,
+            matched_query: screen.matched_query.clone(),
         }
         .into_any_element()
     } else {
@@ -1391,9 +1775,17 @@ fn main() {
             cx.bind_keys(vec![
                 // Global view shortcuts (Vue resolveGlobalShortcut,
                 // modifier = Cmd on macOS / Ctrl elsewhere).
+                // Font scale (parity #5): 6 steps.
+                KeyBinding::new("ctrl-=", crate::TextScaleUp, None),
+                KeyBinding::new("ctrl-plus", crate::TextScaleUp, None),
+                KeyBinding::new("ctrl--", crate::TextScaleDown, None),
+                KeyBinding::new("ctrl-minus", crate::TextScaleDown, None),
+                KeyBinding::new("ctrl-0", crate::TextScaleReset, None),
                 KeyBinding::new("ctrl-1", crate::GlobalOpenSessions, None),
                 KeyBinding::new("ctrl-2", crate::GlobalOpenActiveMemories, None),
                 KeyBinding::new("ctrl-3", crate::GlobalOpenArchivedMemories, None),
+                // Desktop superset: deterministic Recap navigation.
+                KeyBinding::new("ctrl-4", crate::GlobalOpenRecap, None),
                 // Sessions panel: `s` toggles sort. Escape clears the
                 // query globally — while typing, the input owns focus and
                 // the SessionsList context never matches, so the binding
@@ -1404,11 +1796,7 @@ fn main() {
                     crate::session_list::SessionToggleSort,
                     Some("SessionsList"),
                 ),
-                KeyBinding::new(
-                    "escape",
-                    crate::session_list::SessionClearQuery,
-                    None,
-                ),
+                KeyBinding::new("escape", crate::session_list::SessionClearQuery, None),
                 KeyBinding::new("j", crate::views::MemoryCursorDown, Some("MemoryList")),
                 KeyBinding::new("down", crate::views::MemoryCursorDown, Some("MemoryList")),
                 KeyBinding::new("k", crate::views::MemoryCursorUp, Some("MemoryList")),
@@ -1592,6 +1980,8 @@ fn sidebar_row(
             theme::TEXT_BASE
         })
         .when(sub, |row| row.pl(px(30.0)))
+        // Active rows carry the 2px accent glow bar (Vue parity #24).
+        .when(active, |row| row.border_l_2().border_color(theme::ACCENT))
         .text_color(if active { theme::FG } else { theme::FG_2 })
         .bg(if active {
             theme::ACCENT_SOFT
@@ -1688,7 +2078,9 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                         icon_name: Some("sessions"),
                         label: "Sessions".to_string(),
                         badge: Some(session_total),
-                        active: current_view == crate::views::AppView::Sessions && !in_timeline,
+                        active: current_view == crate::views::AppView::Sessions
+                            && !in_timeline
+                            && selected_project.is_none(),
                         sub: false,
                     },
                     Box::new(|app, window, cx| {
@@ -1781,7 +2173,8 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                 )),
         )
         .child(section_divider())
-        // Projects: title + folder rows with counts.
+        // Projects: title + folder rows with counts. Only rendered in the
+        // sessions/memory domains (parity #18).
         .child(
             gpui::div()
                 .id("projects")
@@ -1799,12 +2192,28 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
                         && !in_timeline
                         && selected_project.as_deref() == Some(p.slug.as_str());
                     let slug = p.slug.clone();
-                    let count = p.session_count;
+                    // Count semantics (parity #20): session counts in the
+                    // sessions domain, memory counts in the memory domain.
+                    let count = if current_view == crate::views::AppView::Memory {
+                        app.memories
+                            .as_ref()
+                            .map(|memories| memories.iter().filter(|m| m.project == slug).count())
+                            .unwrap_or(0)
+                    } else {
+                        p.session_count
+                    };
+                    // Vue formatProjectLabel: shortest project_path basename.
+                    let label = app
+                        .data
+                        .project_labels
+                        .get(&slug)
+                        .cloned()
+                        .unwrap_or_else(|| slug.trim_matches('-').to_string());
                     sidebar_row(
                         SidebarRowSpec {
                             id: format!("project-{slug}").into(),
                             icon_name: Some("folder"),
-                            label: p.slug.clone(),
+                            label: label.clone(),
                             badge: Some(count),
                             active: is_selected,
                             sub: false,
