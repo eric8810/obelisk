@@ -28,6 +28,8 @@ pub struct SessionRow {
     pub started_at: String,
     pub ended_at: String,
     pub message_count: i64,
+    /// Git branch at session start (search filter, M4.5).
+    pub git_branch: String,
 }
 
 impl From<SessionSummary> for SessionRow {
@@ -40,6 +42,7 @@ impl From<SessionSummary> for SessionRow {
             started_at: s.started_at,
             ended_at: s.ended_at,
             message_count: s.message_count,
+            git_branch: s.git_branch,
         }
     }
 }
@@ -53,6 +56,14 @@ pub struct SessionSearch {
     pub focus: FocusHandle,
 }
 
+// Keyboard actions for the sessions panel (Vue: `s` toggles sort order,
+// Escape clears the query, `/` focuses search — the last one is handled
+// via on_key_down like before).
+gpui::actions!(
+    obelisk_app,
+    [SessionToggleSort, SessionClearQuery, SessionToggleNoise]
+);
+
 #[derive(IntoElement)]
 pub struct SessionListView {
     sessions: Vec<SessionRow>,
@@ -63,6 +74,18 @@ pub struct SessionListView {
     /// Whether the index has completed a build — distinguishes "building
     /// on first launch" from "no transcripts found".
     index_ready: bool,
+    /// Sort by start/end time descending (Vue state.sortDesc; `s` flips).
+    sort_desc: bool,
+    /// Whether the quiet (untitled) session group is expanded.
+    show_noise: bool,
+}
+
+/// Bundle of list presentation state (M4.5) so the constructor stays
+/// under the argument-count lint.
+pub struct SessionListOptions {
+    pub index_ready: bool,
+    pub sort_desc: bool,
+    pub show_noise: bool,
 }
 
 pub fn session_list_view(
@@ -71,7 +94,7 @@ pub fn session_list_view(
     app: gpui::Entity<crate::ObeliskApp>,
     home: std::path::PathBuf,
     search: SessionSearch,
-    index_ready: bool,
+    options: SessionListOptions,
 ) -> SessionListView {
     SessionListView {
         sessions,
@@ -79,7 +102,9 @@ pub fn session_list_view(
         app,
         home,
         search,
-        index_ready,
+        index_ready: options.index_ready,
+        sort_desc: options.sort_desc,
+        show_noise: options.show_noise,
     }
 }
 
@@ -91,6 +116,7 @@ fn search_hit_row(
     home: std::path::PathBuf,
 ) -> impl IntoElement + use<> {
     let session_id = hit.session_id.clone();
+    let message_uuid = hit.message_uuid.clone();
     let title = if hit.session_title.is_empty() {
         "(untitled)".to_string()
     } else {
@@ -128,9 +154,12 @@ fn search_hit_row(
         )
         .on_click(move |_event, window, cx| {
             let session_id = session_id.clone();
+            let message_uuid = message_uuid.clone();
             let home = home.clone();
             app.update(cx, |app, cx| {
-                app.open_session(session_id, home, window, cx);
+                // Jump straight to the matched message (M4.5): reuse the
+                // memory jump machinery, which locates and highlights.
+                app.open_session_focused(session_id, message_uuid, home, window, cx);
             });
         })
 }
@@ -153,7 +182,7 @@ impl RenderOnce for SessionListView {
         // Client-side filter (Vue visibleSessions): title/project/branch
         // substring match, case-insensitive.
         let query = query.trim().to_lowercase();
-        let rows: Vec<SessionRow> = if query.is_empty() {
+        let mut rows: Vec<SessionRow> = if query.is_empty() {
             self.sessions
         } else {
             self.sessions
@@ -162,10 +191,48 @@ impl RenderOnce for SessionListView {
                     row.title.to_lowercase().contains(&query)
                         || row.project.to_lowercase().contains(&query)
                         || row.id.to_lowercase().contains(&query)
+                        || row.git_branch.to_lowercase().contains(&query)
                 })
                 .collect()
         };
-        let count = rows.len();
+        // Sort (Vue state.sortDesc, toggled with `s`): by ended_at falling
+        // back to started_at, string comparison (ISO-8601 sorts lexically).
+        rows.sort_by(|a, b| {
+            let key = |row: &SessionRow| {
+                if row.ended_at.is_empty() {
+                    row.started_at.clone()
+                } else {
+                    row.ended_at.clone()
+                }
+            };
+            if self.sort_desc {
+                key(b).cmp(&key(a))
+            } else {
+                key(a).cmp(&key(b))
+            }
+        });
+        // Quiet-session fold (Vue isNoise = !title): hidden behind a banner
+        // while the query is empty; the query reveals everything.
+        let (normal_rows, noise_rows) = if query.is_empty() {
+            let mut normal = Vec::new();
+            let mut noise = Vec::new();
+            for row in rows.into_iter() {
+                if row.title.is_empty() {
+                    noise.push(row);
+                } else {
+                    normal.push(row);
+                }
+            }
+            (normal, noise)
+        } else {
+            (rows, Vec::new())
+        };
+        let sort_desc = self.sort_desc;
+        let show_noise = self.show_noise;
+        let noise_visible = show_noise || !query.is_empty();
+        let normal_count = normal_rows.len();
+        let noise_count = if noise_visible { noise_rows.len() } else { 0 };
+        let count = normal_count + noise_count;
         let searching = !query.is_empty();
         let search_focus_handle = search.clone();
 
@@ -175,15 +242,52 @@ impl RenderOnce for SessionListView {
             .overflow_y_scroll()
             .flex()
             .flex_col();
-        for row in rows {
+        for row in normal_rows {
             let app = app.clone();
             let home = home.clone();
             let session_id = row.id.clone();
             let query = query.clone();
             list = list.child(session_row(row, session_id, app, home, query));
         }
+        if !noise_rows.is_empty() && query.is_empty() {
+            // Fold banner (Vue .fold-banner): N quiet sessions hidden.
+            let app_banner = app.clone();
+            list = list.child(
+                gpui::div()
+                    .id("quiet-fold-banner")
+                    .px_6()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(12.0))
+                    .text_color(gpui::rgb(0x77777f))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgb(0x1c1c21)))
+                    .child(gpui::div().child("\u{25b8}"))
+                    .child(gpui::div().child(format!(
+                        "{} quiet sessions hidden — untitled, likely tests or incomplete runs.",
+                        noise_rows.len()
+                    )))
+                    .on_click(move |_event, _window, cx| {
+                        app_banner.update(cx, |app, cx| {
+                            app.show_noise_sessions = !app.show_noise_sessions;
+                            cx.notify();
+                        });
+                    }),
+            );
+            if show_noise {
+                for row in noise_rows {
+                    let app = app.clone();
+                    let home = home.clone();
+                    let session_id = row.id.clone();
+                    let query = query.clone();
+                    list = list.child(session_row(row, session_id, app, home, query));
+                }
+            }
+        }
 
-        let empty = count == 0 && hits.is_empty();
+        let empty = normal_count == 0 && noise_count == 0 && hits.is_empty();
 
         // Full-text matches (same FTS contract as `obelisk --search`) sit
         // above the title/project filter while the query is active.
@@ -243,8 +347,9 @@ impl RenderOnce for SessionListView {
                                     .text_size(px(13.0))
                                     .text_color(gpui::rgb(0x77777f))
                                     .child(format!(
-                                        "{count} session{}",
-                                        if count == 1 { "" } else { "s" }
+                                        "{count} session{} · {}",
+                                        if count == 1 { "" } else { "s" },
+                                        if sort_desc { "newest" } else { "oldest" }
                                     )),
                             ),
                     ),
@@ -271,6 +376,7 @@ impl RenderOnce for SessionListView {
                 let mut panel = gpui::div()
                     .id("sessions-panel")
                     .track_focus(&focus)
+                    .key_context("SessionsList")
                     .flex_1()
                     .flex()
                     .flex_col()
@@ -281,12 +387,45 @@ impl RenderOnce for SessionListView {
                                 window.focus(&handle);
                             }
                         }
+                    })
+                    .on_action({
+                        let app = app.clone();
+                        move |_: &SessionToggleSort, _window, cx| {
+                            app.update(cx, |app, cx| {
+                                app.sessions_sort_desc = !app.sessions_sort_desc;
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_action({
+                        let app = app.clone();
+                        move |_: &SessionToggleNoise, _window, cx| {
+                            app.update(cx, |app, cx| {
+                                app.show_noise_sessions = !app.show_noise_sessions;
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_action({
+                        let app = app.clone();
+                        let search = search.clone();
+                        move |_: &SessionClearQuery, window, cx| {
+                            app.update(cx, |app, cx| {
+                                app.search_query.clear();
+                                app.search_hits.clear();
+                                cx.notify();
+                            });
+                            // Blur the input so Escape does not re-trigger.
+                            let handle = search.read(cx).focus_handle(cx);
+                            if window.focused(cx) == Some(handle.clone()) {
+                                window.focus(&focus);
+                            }
+                        }
                     });
                 if let Some(hits) = hits_section {
                     panel = panel.child(hits);
                 }
                 panel = panel.child(list);
-                let _ = search;
                 panel.into_any_element()
             })
     }
@@ -345,7 +484,11 @@ fn session_row(
                         .text_color(gpui::rgb(0x77777f))
                         .child(gpui::div().child(format!("● {}", row.source)))
                         .child(gpui::div().child(row.project.clone()))
-                        .child(gpui::div().child(when)),
+                        .children(
+                            (!row.git_branch.is_empty())
+                                .then(|| gpui::div().child(row.git_branch.clone())),
+                        )
+                        .child(gpui::div().child(crate::views::fmt_list_time(&when))),
                 ),
         )
         .child(

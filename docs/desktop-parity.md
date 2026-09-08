@@ -41,7 +41,7 @@
 | P0-9 | Settings | **✅ 已修复(M4.3)**:validate_provider_root 单测覆盖(相对路径/不存在目录拒收,存在目录与 ~ 展开);daemon 每次心跳检查 settings.json mtime,变化即从当前 settings 重建 AdaptiveWatcher 并全量 rescan;run_build 每次从当前 settings 重建 registry(root 切换不重启生效) | D14:settings.json root 往复热切换(A↔B)后 index_state 路径翻转断言;Rust 单测 8 项 |
 | P0-10 | 骨架 | **✅ 已修复(M4.0)**:启动探测 StatusNotifierWatcher(busctl/gdbus);无 tray 桌面关窗即退(LastWindowClosed),有 tray 保持常驻(Explicit,本机 Hyprland 实测 true,D8 不变) | 探测代码路径已验证;GNOME 实机复测待做 |
 | P0-11 | 列表 | **✅ 已修复(M4.0)**:char 级折叠匹配(folded 流 + 原 char 边界映射),单测覆盖 İ 1:N 折叠命中/ß 不命中(parity JS)/reassemble 精确性 | `highlight_segments_*` 2 个单测 |
-| P0-12 | 骨架 | 全局键盘层缺失:Cmd/Ctrl+1/2/3、`s` 排序、Esc 清选/清词均无(影响高频操作路径) | 快捷键逐条按下行为符合下表 #25-33 |
+| P0-12 | 骨架 | **✅ 已修复(M4.5)**:全局 Ctrl+1/2/3(根 div on_action,Sessions/Active memories/Archived memories 直达);Sessions 面板 `s` 排序切换(newest/oldest 指示)+ Esc 清词(含 blur 回列表);`/` focus search 原有;配合列表打磨:branch 字段过滤(deepseek gitBranch 解析补齐)、fmt_list_time 分级时间、200ms FTS 防抖、untitled quiet fold(banner+展开)、FTS 命中行点击 open_session_focused 跳到命中消息 | D17:Ctrl+2/1、s、Esc、fold、branch、FTS 跳转 |
 | P0-13 | 时间线 | **✅ 已修复(M4.2)**:j/k/上下移动光标、x 勾选、D 归档、u 撤销、Esc 清选;Enter 在 fc-gpui X11 被平台层吃(记录为已知上游问题,补 m 键等价) | D13:键盘全流程 |
 
 ---
@@ -262,6 +262,7 @@
 
 - **M4.0(批次 1)✅ 2026-09-08**:P0-10、P0-11 修复并验证(cargo 门禁 + 7 单测 + desktop E2E 11/11)。
 - **M4.1(批次 2)✅ 2026-09-08**:P0-1、P0-2 修复(锚恢复+阅读缓存+近底 follow 吸附;markdown memoize 经成本核算降为观察项——可见行解析为微秒级,非热点);新场景 D12(像素断言),desktop E2E 12/12。
+- **M4.5(批次 6)✅ 2026-09-08**:P0-12 修复+列表 P1 打包。全局键 Ctrl+1/2/3(扩展 /tmp/xclick 支持 ctrl- 前缀修饰键);`s` 排序/Esc 清词/quiet fold/banner 展开/branch chip/FTS 防抖 200ms(cx.spawn timer)/FTS 命中跳消息(open_session_focused 复用 memory 跳转机制);deepseek provider 补 gitBranch 解析;行时间改 fmt_list_time 分级。新场景 D17(含 jsonl 变体重写:quiet 无标题/branch feature/parity)。desktop E2E 17/17。
 - **M4.4(批次 5)✅ 2026-09-08**:P0-6/7 修复。Activity 页整体重写(热图/三 tab/统计条/账本三分类/噪音折叠/月展开);Recap 从 JSON 直出改五卡舞台(archetype 调色板入 theme,卡导航 dot/箭头)。数据层新增 load_activity_sessions/heatmap_grid/streaks/day_ledger/month_ledger + 5 单测;修复 Recap 大字 line_height(px(1.1)) 绝对行高导致字形重叠的 bug;E2E D16 导航用像素扫描定位紫箭头(vision 全图坐标漂移 ~200px 不可靠)。新场景 D15/D16;desktop E2E 16/16。
 - **M4.3(批次 4)✅ 2026-09-08**:P0-8/9 修复。daemon 热跟随(settings mtime 心跳检测 → watcher 重建 + rescan;registry 每次 build 从当前 settings 重建)、validate_provider_root 前置校验、About 版本号 + Rebuild index 按钮(状态行 DANGER 红/ACCENT_2 分色)。新场景 D14(热切换往复 + 手动重建);修复 driver 滚轮注入(xclick scroll 语义为正=上,补 scrollAt);D14 点击换算改用窗口实际尺寸(无 WM 时窗口全屏 2522x1520,非假设的 1250x749)。desktop E2E 14/14。
 - **M4.2(批次 3)✅ 2026-09-08**:P0-3/4/5/13 修复 + 顺手 P1(anchors 展示、消息范围、memory 搜索、排序切换、tab chips 可点、时间格式化 fmt_list_time/fmt_relative)。附带修复三个深层 bug:render() 中调用 window.focus() 导致 fc-gpui 丢帧(所有"点击看似无效"的总根源)、sidebar mt_auto 吞掉 Settings 行、memory-list 缺 flex_1 使滚动容器 hitbox 塌缩。新场景 D13;desktop E2E 13/13。键位超集记录:m=打开详情、v=溯源跳转(Enter 被 X11 平台层吃)。

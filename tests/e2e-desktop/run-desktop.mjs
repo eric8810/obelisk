@@ -11,7 +11,7 @@
 // settings.json, pgrep, app log), vision (dim image read) second. Evidence
 // lands in tests/e2e-desktop/evidence/run-*/.
 
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -225,32 +225,32 @@ const scenarios = {
     d.sqlite(db, "UPDATE messages SET input_tokens = 1200, output_tokens = 800 WHERE type = 'assistant';");
     const recapDir = join(ctx.home, '.obelisk', 'recap');
     mkdirSync(recapDir, { recursive: true });
-    writeFileSync(join(recapDir, '2026-W36.json'), JSON.stringify({
-      week: '2026-W36', sessions: 1, highlights: ['E2E recap card'], top_project: '-home-dev-project--',
-    }, null, 2));
+    // M4.4 recap format: persona + five cards (same fixture as D16).
+    cpSync(join(repo, 'tests/fixtures/recap/recap-e2e.json'), join(recapDir, '2026-W36.json'));
     await relaunch(ctx);
 
     d.clickAt(ctx.win, d.NAV.Activity.x, d.NAV.Activity.y);
-    d.sleep(1200);
+    d.sleep(1500);
     let shot = evidence.shot(ctx, 'activity');
     await d.visionExpects(
       shot,
-      'Describe the Activity view: stat cards for Total tokens, Peak day, and Longest turn with values, and a "Daily token usage" bar chart. Quote the total tokens value.',
-      ['Total tokens', 'Peak day', 'Longest turn', 'Daily token usage'],
+      'Describe the Activity view: a stats bar with Lifetime tokens, Peak tokens, Longest task, and streak labels, plus a heatmap grid of small squares. Quote the lifetime tokens value.',
+      ['Lifetime tokens', 'Peak tokens', 'Longest task', 'Current streak'],
     );
-    // Deterministic aggregate parity: the card total must equal the DB sum.
+    // Deterministic aggregate parity: the stats-bar total must equal the DB sum.
     const dbTokens = d.sqlite(db, 'SELECT SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)) FROM messages;');
     if (Number(dbTokens) <= 0) throw new ScenarioError(`expected seeded tokens > 0, got ${dbTokens}`);
     evidence.text('D6-db-tokens.txt', dbTokens);
 
     d.clickAt(ctx.win, d.NAV.Recap.x, d.NAV.Recap.y);
-    d.sleep(1000);
+    d.sleep(1200);
     shot = evidence.shot(ctx, 'recap-list');
-    await d.visionExpects(shot, 'Does the Recap view list one report file "2026-W36.json"?', ['2026-W36.json']);
-    d.clickAt(ctx.win, 700, 150);
-    d.sleep(1000);
+    await d.visionExpects(shot, 'Does the Recap left column list one report file "2026-W36.json"?', ['2026-W36.json']);
+    // Select the row (the list rail occupies the left ~300px).
+    d.clickAt(ctx.win, 260, 150);
+    d.sleep(1500);
     shot = evidence.shot(ctx, 'recap-detail');
-    await d.visionExpects(shot, 'Is the parsed recap JSON shown below the list, including "week": "2026-W36" and the highlight "E2E recap card"?', ['2026-W36', 'E2E recap card']);
+    await d.visionExpects(shot, 'Does the Cover card render with the big title Cover Sentinel Alpha?', ['Cover Sentinel Alpha']);
   },
 
   D7_tray_background_indexing: async (ctx) => {
@@ -508,6 +508,172 @@ const scenarios = {
       shot,
       'Which of the two memory tabs at the top of the panel is highlighted, and does the list below show any row? Quote the row file name if present.',
       ['Archived', 'e2e-mem-1'],
+    );
+  },
+
+  D17_keyboard_and_list_polish: async (ctx) => {
+    // P0-12 + M4.5 list polish: global Ctrl+1/2/3, `s` sort toggle, Escape
+    // clears the query, quiet-session fold, branch chip, FTS hit jumps to
+    // the matched message. Quiet + branch fixtures are derived from the
+    // donor transcript by rewriting session/title and gitBranch lines.
+    const donorDir = join(ctx.corpus, 'sessions', '--home-dev-project--');
+    const donor = readdirSync(donorDir).find((n) => n.startsWith('session-'));
+    const raw = d.sh(`zstd -d -c ${JSON.stringify(join(donorDir, donor, 'session.jsonl.zstd'))}`);
+    const mkVariant = (dirName, rewrite) => {
+      const lines = raw
+        .split('\n')
+        .map((line) => {
+          try {
+            const o = JSON.parse(line);
+            return rewrite(o);
+          } catch {
+            return line;
+          }
+        })
+        .join('\n');
+      const dir = join(donorDir, dirName);
+      mkdirSync(dir, { recursive: true });
+      // Write via a temp file — the transcript is far too large for argv.
+      const tmp = `/tmp/d17-variant-${dirName}.jsonl`;
+      writeFileSync(tmp, lines);
+      d.sh(`zstd -q -f -o ${JSON.stringify(join(dir, 'session.jsonl.zstd'))} ${JSON.stringify(tmp)}`);
+    };
+    // Quiet: same id (deduped into one session) but no title event.
+    mkVariant('session-quiet-00000000-0000-0000-0000-000000000017', (o) => {
+      if (o.type === 'session') {
+        return JSON.stringify({ ...o, id: 'session-quiet-00000000-0000-0000-0000-000000000017' });
+      }
+      if (o.type === 'session/title') {
+        return JSON.stringify({ ...o, data: { ...o.data, title: '' } });
+      }
+      return JSON.stringify(o);
+    });
+    // Branch: own id, titled, carries a gitBranch.
+    mkVariant('session-branch-00000000-0000-0000-0000-000000000042', (o) => {
+      if (o.type === 'session') {
+        return JSON.stringify({
+          ...o,
+          id: 'session-branch-00000000-0000-0000-0000-000000000042',
+          gitBranch: 'feature/parity',
+        });
+      }
+      if (o.type === 'session/title') {
+        return JSON.stringify({ ...o, data: { ...o.data, title: 'Branch fixture session' } });
+      }
+      return JSON.stringify(o);
+    });
+
+    // Wait for the daemon to index the two new sessions.
+    const db = d.dbPath(ctx.home);
+    let count = 0;
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      count = Number(d.sqlite(db, 'SELECT COUNT(*) FROM sessions;'));
+      if (count >= 3) break;
+      d.sleep(800);
+    }
+    if (count < 3) throw new ScenarioError(`fixtures not indexed (${count} sessions)`);
+
+    // 1) Quiet fold: banner hides the untitled session until expanded.
+    let shot = evidence.shot(ctx, 'list');
+    await d.visionExpects(
+      shot,
+      'Does the session list show a banner about quiet sessions hidden? Quote it.',
+      ['quiet sessions hidden'],
+    );
+    const foldAnswer = d.sh(
+      `dim image read ${JSON.stringify(shot)} --prompt 'Find the banner line that mentions quiet sessions hidden. Give its center as X=NN% Y=NN% (percentages of the whole image). Format only.'`,
+      { timeout: 300_000 },
+    );
+    let m = foldAnswer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+    if (!m) throw new ScenarioError(`fold banner not located: ${foldAnswer.slice(0, 160)}`);
+    d.clickAt(
+      ctx.win,
+      Math.round((Number(m[1]) / 100) * ctx.win.width),
+      Math.round((Number(m[2]) / 100) * ctx.win.height),
+    );
+    d.sleep(1200);
+    shot = evidence.shot(ctx, 'fold-expanded');
+    await d.visionExpects(
+      shot,
+      'Is an (untitled) session row visible now, and is a session row showing the text feature/parity also visible?',
+      ['untitled', 'feature/parity'],
+    );
+
+    // 2) `s` toggles sort: the header count flips newest/oldest.
+    d.pressKey('s', { windowId: ctx.win.window_id, focus: false });
+    d.sleep(900);
+    shot = evidence.shot(ctx, 'sort-asc');
+    await d.visionExpects(
+      shot,
+      'In the sessions header next to the session count, does it say oldest now?',
+      ['oldest'],
+    );
+
+    // 3) Escape clears a typed query.
+    d.clickAt(ctx.win, d.SEARCH_BOX.x, d.SEARCH_BOX.y);
+    d.sleep(400);
+    d.typeText('Branch fixture');
+    d.sleep(900);
+    shot = evidence.shot(ctx, 'filtered');
+    await d.visionExpects(
+      shot,
+      'How many session rows are listed, and does the first row title contain Branch fixture?',
+      ['Branch fixture'],
+    );
+    d.pressKey('escape', { windowId: ctx.win.window_id, focus: false });
+    d.sleep(900);
+    shot = evidence.shot(ctx, 'cleared');
+    await d.visionExpects(
+      shot,
+      'Is the search box empty and are the quiet-fold banner and all rows back?',
+      ['quiet sessions hidden'],
+    );
+
+    // 4) FTS hit click jumps to the matched message inside the timeline.
+    d.typeText('text');
+    d.sleep(1200);
+    shot = evidence.shot(ctx, 'fts');
+    await d.visionExpects(
+      shot,
+      'Is there a full-text matches section with a snippet row? Quote the section header.',
+      ['Full-text matches'],
+    );
+    const hitAnswer = d.sh(
+      `dim image read ${JSON.stringify(shot)} --prompt 'Find the first row under the Full-text matches section (the snippet row). Give its center as X=NN% Y=NN% (percentages of the whole image). Format only.'`,
+      { timeout: 300_000 },
+    );
+    m = hitAnswer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
+    if (!m) throw new ScenarioError(`hit row not located: ${hitAnswer.slice(0, 160)}`);
+    d.clickAt(
+      ctx.win,
+      Math.round((Number(m[1]) / 100) * ctx.win.width),
+      Math.round((Number(m[2]) / 100) * ctx.win.height),
+    );
+    d.sleep(2000);
+    shot = evidence.shot(ctx, 'timeline');
+    await d.visionExpects(
+      shot,
+      'Does the timeline view show an opened session with message bubbles, and is one message highlighted with a colored outline?',
+      ['Sanitized fixture session'],
+    );
+
+    // 5) Global shortcuts: Ctrl+2 → Active memories, Ctrl+1 → back.
+    d.pressKey('ctrl-2', { windowId: ctx.win.window_id, focus: false });
+    d.sleep(1500);
+    shot = evidence.shot(ctx, 'ctrl2');
+    await d.visionExpects(
+      shot,
+      'Which view is showing now? Is it the memory list with an Active tab selected?',
+      ['Active'],
+    );
+    d.pressKey('ctrl-1', { windowId: ctx.win.window_id, focus: false });
+    d.sleep(1500);
+    shot = evidence.shot(ctx, 'ctrl1');
+    await d.visionExpects(
+      shot,
+      'Is the sessions list visible again with the quiet-fold banner?',
+      ['quiet sessions hidden'],
     );
   },
 
@@ -826,6 +992,7 @@ const order = [
   'D14_settings_rebuild_and_validation',
   'D15_activity_heatmap_ledger',
   'D16_recap_five_cards',
+  'D17_keyboard_and_list_polish',
 ];
 
 const selected = only ? order.filter((n) => only.some((o) => n.startsWith(o))) : order;

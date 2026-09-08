@@ -105,6 +105,16 @@ impl gpui::http_client::HttpClient for LocalImageHttpClient {
     }
 }
 
+// Global view shortcuts (Vue resolveGlobalShortcut: Cmd/Ctrl+1/2/3).
+gpui::actions!(
+    obelisk_app,
+    [
+        GlobalOpenSessions,
+        GlobalOpenActiveMemories,
+        GlobalOpenArchivedMemories
+    ]
+);
+
 struct ObeliskApp {
     data: AppData,
     home: std::path::PathBuf,
@@ -147,6 +157,10 @@ struct ObeliskApp {
     activity_tab: crate::views::ActivityTab,
     activity_day: Option<String>,
     activity_months: usize,
+    /// Session-list sort (Vue state.sortDesc, toggled with `s`) and the
+    /// quiet-session fold (M4.5).
+    sessions_sort_desc: bool,
+    show_noise_sessions: bool,
     /// Session-list search box state (Vue: `/` focuses, filters by
     /// title/project/branch client-side). Observed → `search_query`.
     search_state: gpui::Entity<adabraka_ui::components::input_state::InputState>,
@@ -240,7 +254,26 @@ impl ObeliskApp {
             let query = state.read(cx).content().to_string();
             if query != this.search_query {
                 this.search_query = query.clone();
-                this.search_hits = crate::data::search_messages(&search_home, &search_cwd, &query);
+                this.search_hits.clear();
+                // Debounced full-text search (Vue: 200ms) — typing a word
+                // runs one FTS pass, not one per keystroke.
+                let home = search_home.clone();
+                let cwd = search_cwd.clone();
+                let query_at_fire = query.clone();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(200))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        if this.search_query == query_at_fire {
+                            this.search_hits =
+                                crate::data::search_messages(&home, &cwd, &query_at_fire);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
                 cx.notify();
             }
         });
@@ -276,6 +309,8 @@ impl ObeliskApp {
             settings_status: None,
             reader_states: Vec::new(),
             search_state,
+            sessions_sort_desc: true,
+            show_noise_sessions: false,
             search_query: String::new(),
             activity_tab: crate::views::ActivityTab::Daily,
             activity_day: None,
@@ -827,6 +862,23 @@ impl gpui::Render for ObeliskApp {
             .h_full()
             .w_full()
             .font_family(".SystemUIFont")
+            .on_action(cx.listener(
+                |this: &mut ObeliskApp, _: &GlobalOpenSessions, _window, cx| {
+                    this.select_view(crate::views::AppView::Sessions, _window, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this: &mut ObeliskApp, _: &GlobalOpenActiveMemories, _window, cx| {
+                    this.select_view(crate::views::AppView::Memory, _window, cx);
+                    this.select_memory_tab(crate::views::MemoryTab::Active, _window, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this: &mut ObeliskApp, _: &GlobalOpenArchivedMemories, _window, cx| {
+                    this.select_view(crate::views::AppView::Memory, _window, cx);
+                    this.select_memory_tab(crate::views::MemoryTab::Archived, _window, cx);
+                },
+            ))
             // Sidebar, a 1:1 port of the original renderer's App.vue aside:
             // brand, Library (Sessions/Memory with Active/Archived subs),
             // Stats (Activity/Recap), Projects (filter + list), Settings
@@ -1177,6 +1229,7 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
             started_at: s.started_at,
             ended_at: s.ended_at,
             message_count: s.message_count,
+            git_branch: s.git_branch,
         })
         .collect();
     let selected = app.selected_project.clone();
@@ -1220,7 +1273,11 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
                     input: app.search_state.clone(),
                     focus: app.sessions_focus.clone(),
                 },
-                app.data.index_ready,
+                session_list::SessionListOptions {
+                    index_ready: app.data.index_ready,
+                    sort_desc: app.sessions_sort_desc,
+                    show_noise: app.show_noise_sessions,
+                },
             ))
             .into_any_element()
     }
@@ -1294,6 +1351,22 @@ fn main() {
             // memory list; Cmd/Ctrl+2/3 jump to Active/Archived globally).
             use gpui::KeyBinding;
             cx.bind_keys(vec![
+                // Global view shortcuts (Vue resolveGlobalShortcut,
+                // modifier = Cmd on macOS / Ctrl elsewhere).
+                KeyBinding::new("ctrl-1", crate::GlobalOpenSessions, None),
+                KeyBinding::new("ctrl-2", crate::GlobalOpenActiveMemories, None),
+                KeyBinding::new("ctrl-3", crate::GlobalOpenArchivedMemories, None),
+                // Sessions panel: `s` toggles sort, Escape clears the query.
+                KeyBinding::new(
+                    "s",
+                    crate::session_list::SessionToggleSort,
+                    Some("SessionsList"),
+                ),
+                KeyBinding::new(
+                    "escape",
+                    crate::session_list::SessionClearQuery,
+                    Some("SessionsList"),
+                ),
                 KeyBinding::new("j", crate::views::MemoryCursorDown, Some("MemoryList")),
                 KeyBinding::new("down", crate::views::MemoryCursorDown, Some("MemoryList")),
                 KeyBinding::new("k", crate::views::MemoryCursorUp, Some("MemoryList")),

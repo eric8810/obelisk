@@ -25,6 +25,8 @@ pub struct SessionSummary {
     pub started_at: String,
     pub ended_at: String,
     pub message_count: i64,
+    /// Git branch at session start (Vue branch filter, M4.5).
+    pub git_branch: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1041,7 +1043,7 @@ fn read_sessions(conn: &rusqlite::Connection) -> Vec<SessionSummary> {
     let mut stmt = match conn.prepare(
         "SELECT id, COALESCE(title, ''), COALESCE(project, ''), COALESCE(source, 'claude'),
                 COALESCE(started_at, ''), COALESCE(ended_at, ''),
-                COALESCE(message_count, 0)
+                COALESCE(message_count, 0), COALESCE(git_branch, '')
          FROM sessions
          ORDER BY COALESCE(ended_at, started_at) DESC",
     ) {
@@ -1059,6 +1061,7 @@ fn read_sessions(conn: &rusqlite::Connection) -> Vec<SessionSummary> {
                 ended_at: row.get(5)?,
                 // COALESCE(message_count, 0) is column 6.
                 message_count: row.get(6)?,
+                git_branch: row.get(7)?,
             })
         })
         .unwrap_or_else(|_| panic!("sessions query is valid"));

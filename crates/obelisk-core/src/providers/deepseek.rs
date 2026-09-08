@@ -2248,7 +2248,13 @@ pub fn parse(unit: &IndexUnit, cursor: Cursor) -> Vec<StreamItem> {
             .and_then(Value::as_f64)
             .and_then(|ms| timestamp_of_ms(Some(ms))),
         ended_at: emitter.ended_at.clone(),
-        git_branch: None,
+        // Branch observed on any member header in the session (M4.5 branch
+        // filter; claude.rs parses the same field name).
+        git_branch: members
+            .iter()
+            .filter_map(|m| m.header.get("gitBranch").and_then(Value::as_str))
+            .map(str::to_string)
+            .find(|branch| !branch.is_empty()),
         version: root_header
             .get("version")
             .and_then(Value::as_f64)
