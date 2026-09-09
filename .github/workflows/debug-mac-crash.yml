@@ -1,0 +1,64 @@
+name: Debug macOS crash
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-mac-binary:
+    name: Run the v0.4.0 mac app binary on a runner
+    runs-on: macos-latest
+    steps:
+      - name: Download the v0.4.0 aarch64 app bundle
+        run: |
+          curl -sL https://github.com/eric8810/obelisk/releases/download/obelisk-v0.4.0/obelisk-app-macos-aarch64.tar.gz -o app.tar.gz
+          tar xzf app.tar.gz
+          ls -la Obelisk.app/Contents/MacOS/
+
+      # The runner is arm64; run the binary directly for 10s and capture
+      # every line of output (a panic prints its message + backtrace).
+      - name: Run binary and capture output
+        run: |
+          set +e
+          BIN=Obelisk.app/Contents/MacOS/obelisk-app
+          "$BIN" > run.log 2>&1 &
+          PID=$!
+          sleep 12
+          if kill -0 $PID 2>/dev/null; then
+            echo "=== STILL RUNNING after 12s (no immediate crash) ==="
+            kill $PID || true
+          else
+            wait $PID
+            echo "=== PROCESS EXITED with code $? ==="
+          fi
+          echo "===== captured output ====="
+          cat run.log
+          echo "===== end ====="
+
+      # Also run the x86_64 build under Rosetta 2 in case the user is on
+      # an Intel mac.
+      - name: Download and run the x86_64 build
+        run: |
+          curl -sL https://github.com/eric8810/obelisk/releases/download/obelisk-v0.4.0/obelisk-app-macos-x86_64.tar.gz -o app64.tar.gz
+          tar xzf app64.tar.gz
+          set +e
+          BIN=Obelisk.app/Contents/MacOS/obelisk-app
+          "$BIN" > run64.log 2>&1 &
+          PID=$!
+          sleep 12
+          if kill -0 $PID 2>/dev/null; then
+            echo "=== x86 STILL RUNNING after 12s ==="
+            kill $PID || true
+          else
+            wait $PID
+            echo "=== x86 PROCESS EXITED with code $? ==="
+          fi
+          echo "===== x86 output ====="
+          cat run64.log
+
+      - name: Check for crash reports
+        if: always()
+        run: |
+          ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | tail -5 || echo "no diagnostic reports"
+          for f in ~/Library/Logs/DiagnosticReports/obelisk*.ips; do
+            [ -f "$f" ] && echo "=== $f ===" && head -60 "$f"
+          done
