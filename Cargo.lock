@@ -2167,8 +2167,6 @@ dependencies = [
 [[package]]
 name = "fc-ui"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec910f9446f7310e774797c3423f71e733a814889654840d768e009ff3b38d03"
 dependencies = [
  "bytes",
  "fc-gpui",
@@ -3972,7 +3970,7 @@ dependencies = [
 
 [[package]]
 name = "obelisk-app"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3988,7 +3986,7 @@ dependencies = [
 
 [[package]]
 name = "obelisk-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "obelisk-core",
  "serde_json",
@@ -3996,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "obelisk-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "notify",

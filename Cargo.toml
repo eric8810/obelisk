@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/obelisk-core", "crates/obelisk-cli", "crates/obelisk-app"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "AGPL-3.0-only"
 repository = "https://github.com/eric8810/obelisk"
@@ -20,6 +20,13 @@ zstd = "0.13"
 chrono = "0.4"
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
+
+[patch.crates-io]
+# fc-ui 0.8.1's code-block tokenizer slices lines at byte offsets, which
+# panics on any multi-byte UTF-8 content (CJK notes inside code blocks — the
+# v0.4.1 macOS launch crash). Vendored with a char-boundary-safe fix until
+# an upstream release carries it.
+fc-ui = { path = "vendor/fc-ui" }
 
 [profile.release]
 lto = "thin"

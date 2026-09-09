@@ -15,3 +15,4 @@ app/scripts/
 app/*.html
 /target/
 tests/e2e*/evidence/
+vendor/fc-ui/target/

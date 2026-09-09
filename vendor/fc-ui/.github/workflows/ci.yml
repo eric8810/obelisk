@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: ${{ matrix.name }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: build
+            target: build-ci
+          - name: fmt
+            target: fmt-check
+          - name: clippy
+            target: clippy-ci
+          - name: test
+            target: test-ci
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: 1.54.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo-${{ matrix.name }}
+
+      - name: Run ${{ matrix.name }}
+        run: just ${{ matrix.target }}
+
+  platform-checks:
+    name: platform-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x11-wayland-accessibility
+            os: ubuntu-24.04
+            target: check-platform-ci
+          - name: windows-accessibility
+            os: windows-2022
+            target: check-platform-ci
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwayland-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            mesa-vulkan-drivers \
+            pkg-config
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: 1.54.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo-platform-accessibility
+
+      - name: Run locked platform check
+        run: just ${{ matrix.target }}
+
+  visual-smoke:
+    name: visual-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-15
+            target: visual-smoke-ci
+          - name: windows
+            os: windows-2022
+            target: visual-smoke-ci
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: 1.54.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo-real-visual-smoke
+
+      - name: Run real renderer smoke
+        env:
+          ADABRAKA_REQUIRE_REAL_VISUAL: "1"
+        run: just ${{ matrix.target }}
+
+  capabilities:
+    name: capability-contract
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: 1.54.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo-capabilities
+
+      - name: Verify capability, feature, and public API contracts
+        run: just verify-capabilities-ci
+
+  agents-md:
+    name: agents-md
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: 1.54.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify documented commands in AGENTS.md and CLAUDE.md
+        run: just validate-agent-docs
+
+      - name: Check capability boundaries
+        run: just check-boundaries
+
+      - name: Check Cargo compatibility contract
+        run: just check-cargo-contract
+
+      - name: Enforce staged clippy policy
+        run: just check-clippy-policy
