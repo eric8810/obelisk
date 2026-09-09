@@ -167,6 +167,8 @@ struct ObeliskApp {
     /// Lazily loaded view data; `None` means "not loaded for this open yet".
     memories: Option<std::rc::Rc<Vec<crate::data::MemoryEntry>>>,
     selected_memory: Option<usize>,
+    /// Memory detail body: show the rendered markdown or its source (#11).
+    memory_detail_source: bool,
     usage: Option<crate::data::UsageStats>,
     overview: Option<crate::data::OverviewStats>,
     recaps: Option<std::rc::Rc<Vec<crate::data::RecapEntry>>>,
@@ -239,6 +241,9 @@ struct TimelineScreenState {
     focus_highlight: Option<(String, std::time::Instant)>,
     /// The FTS query that produced the focus jump (parity #52).
     matched_query: Option<String>,
+    /// Header fields (parity #1-2): git branch + relative last-active.
+    branch: Option<String>,
+    last_active: Option<String>,
 }
 
 /// Per-session reading position, restored when the session is reopened
@@ -351,6 +356,7 @@ impl ObeliskApp {
             view: crate::views::AppView::Sessions,
             memories: None,
             selected_memory: None,
+            memory_detail_source: false,
             usage: None,
             overview: None,
             recaps: None,
@@ -510,18 +516,38 @@ impl ObeliskApp {
             .and_then(|conn| crate::data::load_session_detail(&conn, &session_id));
         if let Some(detail) = detail {
             let items = std::rc::Rc::new(timeline::timeline_items(&detail.messages));
+            // Header fields (parity #1-2): branch + relative last-active.
+            let (branch, last_active) = obelisk_core::db::open_read_db(&home)
+                .ok()
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT COALESCE(git_branch, ''), COALESCE(ended_at, started_at, '') \
+                         FROM sessions WHERE id = ?1",
+                        [&session_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                            ))
+                        },
+                    )
+                    .ok()
+                })
+                .map(|(branch, ended)| {
+                    let last = crate::views::fmt_relative(&ended);
+                    (
+                        (!branch.is_empty()).then_some(branch),
+                        (!last.is_empty()).then_some(last),
+                    )
+                })
+                .unwrap_or((None, None));
             let focus = cx.focus_handle();
             window.focus(&focus);
             let list_state = gpui::ListState::new(items.len(), gpui::ListAlignment::Top, px(600.0));
             // Near-bottom auto-arm (parity: the Vue app enters follow-tail
             // within 50px of the end). Upward input stops following inside
             // fc-gpui's list itself.
-            let follow_list = list_state.clone();
-            list_state.set_scroll_handler(move |event, _window, _cx| {
-                if !event.is_following_tail && follow_list.is_scrolled_to_end() == Some(true) {
-                    follow_list.set_follow_tail(true);
-                }
-            });
+            install_follow_tail_arm(&list_state);
             // Restore the reading position for a revisited session
             // (scroll anchor + disclosures).
             let cached = self
@@ -549,6 +575,8 @@ impl ObeliskApp {
                     ui_state: reader.ui_state,
                     focus_highlight: None,
                     matched_query: None,
+                    branch: branch.clone(),
+                    last_active: last_active.clone(),
                 });
                 cx.notify();
                 return;
@@ -563,6 +591,8 @@ impl ObeliskApp {
                 ui_state: std::rc::Rc::new(timeline_view::TimelineUiState::new()),
                 focus_highlight: None,
                 matched_query: None,
+                branch: None,
+                last_active: None,
             });
         }
         cx.notify();
@@ -1136,6 +1166,17 @@ impl gpui::Render for ObeliskApp {
                         cursor_id: self.memory_cursor.clone(),
                         selection: std::rc::Rc::new(self.memory_selection.clone()),
                         sort_desc: self.memory_sort_desc,
+                        detail_source: self.memory_detail_source,
+                        on_toggle_detail_source: {
+                            let src_handle = cx.entity();
+                            std::rc::Rc::new(move |window: &mut Window, cx| {
+                                src_handle.update(cx, |app: &mut ObeliskApp, cx| {
+                                    app.memory_detail_source = !app.memory_detail_source;
+                                    cx.notify();
+                                    let _ = window;
+                                });
+                            })
+                        },
                         undo: self
                             .memory_undo
                             .as_ref()
@@ -1673,6 +1714,8 @@ fn sessions_panel(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::A
             },
             text_scale: app.text_scale,
             matched_query: screen.matched_query.clone(),
+            branch: screen.branch.clone(),
+            last_active: screen.last_active.clone(),
         }
         .into_any_element()
     } else {
@@ -1754,6 +1797,25 @@ fn status_notifier_available() -> bool {
     }
     // No bus tooling reachable: assume the tray exists (current behavior).
     true
+}
+
+/// Near-bottom auto-arm (parity: the Vue app enters follow-tail near the
+/// end). fc-gpui invokes the scroll handler while the list state's RefCell
+/// is mutably borrowed, so the handler must not call any ListState method
+/// directly — it derives near-bottom from the event payload and defers the
+/// arm until the borrow is released (v0.4.0 macOS crash regression).
+fn install_follow_tail_arm(list_state: &gpui::ListState) {
+    let follow_list = list_state.clone();
+    list_state.set_scroll_handler(move |event, _window, cx| {
+        let near_bottom =
+            event.count > 0 && event.visible_range.end.saturating_add(1) >= event.count;
+        if !event.is_following_tail && near_bottom {
+            let list = follow_list.clone();
+            cx.defer(move |_cx| {
+                list.set_follow_tail(true);
+            });
+        }
+    });
 }
 
 fn main() {
@@ -2248,4 +2310,58 @@ fn sidebar(app: &mut ObeliskApp, cx: &mut Context<ObeliskApp>) -> gpui::AnyEleme
             cx,
         )))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::install_follow_tail_arm;
+    use gpui::{
+        div, list, point, px, size, AppContext, Context, IntoElement, ListAlignment, ListState,
+        Render, ScrollDelta, ScrollWheelEvent, Styled, TestAppContext, Window,
+    };
+
+    // Regression test for the macOS launch crash reported against v0.4.0:
+    // fc-gpui invokes the scroll handler while the list state's RefCell is
+    // mutably borrowed (ListStateInner::scroll, list.rs). Calling any
+    // ListState method from inside the handler (e.g. is_scrolled_to_end())
+    // re-borrows the same RefCell and panics with "RefCell already mutably
+    // borrowed". The production handler must defer all state mutation and
+    // derive near-bottom from the event payload alone.
+    #[gpui::test]
+    fn test_scroll_handler_defers_list_state_access(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+
+        // Same handler open_session installs (production code path).
+        let state = ListState::new(5, ListAlignment::Top, px(0.)).measure_all();
+        install_follow_tail_arm(&state);
+
+        struct TestView(ListState);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                list(self.0.clone(), |_, _, _| {
+                    div().h(px(20.)).w_full().into_any_element()
+                })
+                .w_full()
+                .h_full()
+            }
+        }
+
+        // 5 items x 20px in a 40px viewport: scrolling -60px lands exactly
+        // at the bottom, so the handler observes visible_range 3..5 == count.
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(40.)), |_, cx| {
+            cx.new(|_| TestView(state.clone()))
+        });
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(1.), px(1.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-60.))),
+            ..Default::default()
+        });
+
+        // Drawing the next frame flushes the effect queue, which runs the
+        // deferred follow-tail arm once the RefCell borrow is released.
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(40.)), |_, cx| {
+            cx.new(|_| TestView(state.clone()))
+        });
+        assert!(state.is_following_tail());
+    }
 }
