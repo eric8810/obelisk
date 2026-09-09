@@ -14,37 +14,48 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build the app
-        run: cargo build --release -p obelisk-app
+      - name: Build both arches
+        run: |
+          cargo build --release -p obelisk-app --target aarch64-apple-darwin
+          cargo build --release -p obelisk-app --target x86_64-apple-darwin
 
-      # Run the freshly built binary directly for 12s; a panic prints its
-      # message + backtrace to stderr, which we capture verbatim.
-      - name: Run binary and capture output
+      - name: Run arm64 binary
         run: |
           set +e
-          BIN=target/release/obelisk-app
-          RUST_BACKTRACE=1 "$BIN" > run.log 2>&1 &
+          RUST_BACKTRACE=1 target/aarch64-apple-darwin/release/obelisk-app > arm.log 2>&1 &
           PID=$!
           sleep 12
           if kill -0 $PID 2>/dev/null; then
-            echo "=== STILL RUNNING after 12s (no immediate crash) ==="
+            echo "=== arm64 STILL RUNNING after 12s ==="
             kill $PID || true
           else
             wait $PID
-            echo "=== PROCESS EXITED with code $? ==="
+            echo "=== arm64 EXITED code $? ==="
           fi
-          echo "===== captured output ====="
-          cat run.log
-          echo "===== end ====="
+          cat arm.log
+
+      - name: Run x86_64 binary (Rosetta)
+        run: |
+          set +e
+          RUST_BACKTRACE=1 target/x86_64-apple-darwin/release/obelisk-app > x64.log 2>&1 &
+          PID=$!
+          sleep 12
+          if kill -0 $PID 2>/dev/null; then
+            echo "=== x86_64 STILL RUNNING after 12s ==="
+            kill $PID || true
+          else
+            wait $PID
+            echo "=== x86_64 EXITED code $? ==="
+          fi
+          cat x64.log
 
       - name: Check for crash reports
         if: always()
         run: |
-          ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | tail -5 || echo "no diagnostic reports"
           for f in ~/Library/Logs/DiagnosticReports/obelisk*.ips; do
             [ -f "$f" ] && echo "=== $f ===" && head -80 "$f"
           done
