@@ -7,14 +7,16 @@ jobs:
   run-mac-binary:
     name: Run the v0.4.0 mac app binary on a runner
     runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Download the v0.4.0 aarch64 app bundle
         run: |
-          curl -sL https://github.com/eric8810/obelisk/releases/download/obelisk-v0.4.0/obelisk-app-macos-aarch64.tar.gz -o app.tar.gz
+          gh release download obelisk-v0.4.0 --repo eric8810/obelisk --pattern 'obelisk-app-macos-aarch64.tar.gz' -O app.tar.gz
           tar xzf app.tar.gz
           ls -la Obelisk.app/Contents/MacOS/
 
-      # The runner is arm64; run the binary directly for 10s and capture
+      # The runner is arm64; run the binary directly for 12s and capture
       # every line of output (a panic prints its message + backtrace).
       - name: Run binary and capture output
         run: |
@@ -34,11 +36,9 @@ jobs:
           cat run.log
           echo "===== end ====="
 
-      # Also run the x86_64 build under Rosetta 2 in case the user is on
-      # an Intel mac.
       - name: Download and run the x86_64 build
         run: |
-          curl -sL https://github.com/eric8810/obelisk/releases/download/obelisk-v0.4.0/obelisk-app-macos-x86_64.tar.gz -o app64.tar.gz
+          gh release download obelisk-v0.4.0 --repo eric8810/obelisk --pattern 'obelisk-app-macos-x86_64.tar.gz' -O app64.tar.gz
           tar xzf app64.tar.gz
           set +e
           BIN=Obelisk.app/Contents/MacOS/obelisk-app
@@ -60,5 +60,6 @@ jobs:
         run: |
           ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | tail -5 || echo "no diagnostic reports"
           for f in ~/Library/Logs/DiagnosticReports/obelisk*.ips; do
-            [ -f "$f" ] && echo "=== $f ===" && head -60 "$f"
+            [ -f "$f" ] && echo "=== $f ===" && head -80 "$f"
           done
+          exit 0
