@@ -5,53 +5,88 @@ on:
 
 jobs:
   run-mac-binary:
-    name: Build and run obelisk-app on a macOS runner
+    name: Reproduce the double-click (LaunchServices) launch path
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: obelisk-v0.4.0
 
       - uses: dtolnay/rust-toolchain@1.98.0
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build both arches
-        run: |
-          cargo build --release -p obelisk-app --target aarch64-apple-darwin
-          cargo build --release -p obelisk-app --target x86_64-apple-darwin
+      - name: Build the app
+        run: cargo build --release -p obelisk-app
 
-      - name: Run arm64 binary
+      - name: Bundle as Obelisk.app (same as release-rust.yml)
+        run: |
+          BIN=target/release/obelisk-app
+          strip "$BIN" || true
+          APP=Obelisk.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/obelisk-app"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>              <string>Obelisk</string>
+            <key>CFBundleDisplayName</key>       <string>Obelisk</string>
+            <key>CFBundleExecutable</key>        <string>obelisk-app</string>
+            <key>CFBundleIdentifier</key>        <string>io.github.eric8810.obelisk</string>
+            <key>CFBundlePackageType</key>       <string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.4.1</string>
+            <key>CFBundleVersion</key>           <string>0.4.1</string>
+            <key>LSMinimumSystemVersion</key>    <string>11.0</string>
+            <key>NSHighResolutionCapable</key>   <true/>
+            <key>LSUIElement</key>               <false/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --sign - "$APP"
+          echo "bundle ready"
+
+      - name: Launch via LaunchServices with quarantine (Finder double-click equivalent)
         run: |
           set +e
-          RUST_BACKTRACE=1 target/aarch64-apple-darwin/release/obelisk-app > arm.log 2>&1 &
-          PID=$!
-          sleep 12
-          if kill -0 $PID 2>/dev/null; then
-            echo "=== arm64 STILL RUNNING after 12s ==="
-            kill $PID || true
-          else
-            wait $PID
-            echo "=== arm64 EXITED code $? ==="
-          fi
-          cat arm.log
+          # Simulate a browser download: quarantine xattr on the bundle.
+          xattr -w com.apple.quarantine "0081;66f00000;Safari;FB50F48F-1E4E-43B9-A8C5-7C4B1E9C21A5" Obelisk.app
+          open Obelisk.app --stdout /tmp/open-out.log --stderr /tmp/open-err.log
+          OPEN_RC=$?
+          echo "open rc=$OPEN_RC"
+          sleep 15
+          echo "=== process ==="
+          pgrep -fl obelisk-app || echo "no process"
+          echo "=== app stdout ==="
+          cat /tmp/open-out.log 2>/dev/null
+          echo "=== app stderr ==="
+          cat /tmp/open-err.log 2>/dev/null
+          echo "=== windows (System Events) ==="
+          osascript -e 'tell application "System Events" to tell process "obelisk-app" to get name of every window' 2>&1
+          echo "=== lsappinfo ==="
+          lsappinfo info -only ApplicationType,LSUIElement io.github.eric8810.obelisk 2>&1 | head -5
 
-      - name: Run x86_64 binary (Rosetta)
+      - name: Capture screen
+        if: always()
+        run: |
+          screencapture -x /tmp/screen-quarantine.png || true
+          mkdir -p artifacts && cp /tmp/screen-quarantine.png artifacts/ 2>/dev/null
+
+      - name: Launch again without quarantine (post "Allow Anyway")
+        if: always()
         run: |
           set +e
-          RUST_BACKTRACE=1 target/x86_64-apple-darwin/release/obelisk-app > x64.log 2>&1 &
-          PID=$!
-          sleep 12
-          if kill -0 $PID 2>/dev/null; then
-            echo "=== x86_64 STILL RUNNING after 12s ==="
-            kill $PID || true
-          else
-            wait $PID
-            echo "=== x86_64 EXITED code $? ==="
-          fi
-          cat x64.log
+          pkill -f obelisk-app || true
+          sleep 2
+          xattr -cr Obelisk.app
+          open Obelisk.app --stdout /tmp/open2-out.log --stderr /tmp/open2-err.log
+          sleep 15
+          echo "=== process (no quarantine) ==="
+          pgrep -fl obelisk-app || echo "no process"
+          echo "=== windows (System Events) ==="
+          osascript -e 'tell application "System Events" to tell process "obelisk-app" to get name of every window' 2>&1
+          screencapture -x /tmp/screen-clean.png || true
+          cp /tmp/screen-clean.png artifacts/ 2>/dev/null
+          cp /tmp/open2-out.log /tmp/open2-err.log artifacts/ 2>/dev/null
 
       - name: Check for crash reports
         if: always()
@@ -60,3 +95,9 @@ jobs:
             [ -f "$f" ] && echo "=== $f ===" && head -80 "$f"
           done
           exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-launch-repro
+          path: artifacts/
