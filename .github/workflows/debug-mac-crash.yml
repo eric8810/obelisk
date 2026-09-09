@@ -5,24 +5,29 @@ on:
 
 jobs:
   run-mac-binary:
-    name: Run the v0.4.0 mac app binary on a runner
+    name: Build and run obelisk-app on a macOS runner
     runs-on: macos-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Download the v0.4.0 aarch64 app bundle
-        run: |
-          gh release download obelisk-v0.4.0 --repo eric8810/obelisk --pattern 'obelisk-app-macos-aarch64.tar.gz' -O app.tar.gz
-          tar xzf app.tar.gz
-          ls -la Obelisk.app/Contents/MacOS/
+      - uses: actions/checkout@v4
+        with:
+          ref: obelisk-v0.4.0
 
-      # The runner is arm64; run the binary directly for 12s and capture
-      # every line of output (a panic prints its message + backtrace).
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the app
+        run: cargo build --release -p obelisk-app
+
+      # Run the freshly built binary directly for 12s; a panic prints its
+      # message + backtrace to stderr, which we capture verbatim.
       - name: Run binary and capture output
         run: |
           set +e
-          BIN=Obelisk.app/Contents/MacOS/obelisk-app
-          "$BIN" > run.log 2>&1 &
+          BIN=target/release/obelisk-app
+          RUST_BACKTRACE=1 "$BIN" > run.log 2>&1 &
           PID=$!
           sleep 12
           if kill -0 $PID 2>/dev/null; then
@@ -35,25 +40,6 @@ jobs:
           echo "===== captured output ====="
           cat run.log
           echo "===== end ====="
-
-      - name: Download and run the x86_64 build
-        run: |
-          gh release download obelisk-v0.4.0 --repo eric8810/obelisk --pattern 'obelisk-app-macos-x86_64.tar.gz' -O app64.tar.gz
-          tar xzf app64.tar.gz
-          set +e
-          BIN=Obelisk.app/Contents/MacOS/obelisk-app
-          "$BIN" > run64.log 2>&1 &
-          PID=$!
-          sleep 12
-          if kill -0 $PID 2>/dev/null; then
-            echo "=== x86 STILL RUNNING after 12s ==="
-            kill $PID || true
-          else
-            wait $PID
-            echo "=== x86 PROCESS EXITED with code $? ==="
-          fi
-          echo "===== x86 output ====="
-          cat run64.log
 
       - name: Check for crash reports
         if: always()
