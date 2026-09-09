@@ -45,14 +45,14 @@ jobs:
           codesign --force --sign - "$APP"
           echo "bundle ready"
 
-      - name: Launch via LaunchServices with quarantine (Finder double-click equivalent)
+      # Post-"Allow Anyway" state: quarantine attribute removed (this is what
+      # the user's machine does after they approve the app), then a real
+      # LaunchServices launch — the exact double-click path.
+      - name: Launch via LaunchServices (post Allow-Anyway)
         run: |
           set +e
-          # Simulate a browser download: quarantine xattr on the bundle.
-          xattr -w com.apple.quarantine "0081;66f00000;Safari;FB50F48F-1E4E-43B9-A8C5-7C4B1E9C21A5" Obelisk.app
-          open Obelisk.app --stdout /tmp/open-out.log --stderr /tmp/open-err.log
-          OPEN_RC=$?
-          echo "open rc=$OPEN_RC"
+          timeout 30 open Obelisk.app --stdout /tmp/open-out.log --stderr /tmp/open-err.log
+          echo "open rc=$?"
           sleep 15
           echo "=== process ==="
           pgrep -fl obelisk-app || echo "no process"
@@ -60,33 +60,33 @@ jobs:
           cat /tmp/open-out.log 2>/dev/null
           echo "=== app stderr ==="
           cat /tmp/open-err.log 2>/dev/null
-          echo "=== windows (System Events) ==="
-          osascript -e 'tell application "System Events" to tell process "obelisk-app" to get name of every window' 2>&1
+          echo "=== windows (System Events, 10s cap) ==="
+          timeout 10 osascript -e 'tell application "System Events" to tell process "obelisk-app" to get name of every window' 2>&1
           echo "=== lsappinfo ==="
-          lsappinfo info -only ApplicationType,LSUIElement io.github.eric8810.obelisk 2>&1 | head -5
+          timeout 10 lsappinfo info -only ApplicationType,LSUIElement io.github.eric8810.obelisk 2>&1 | head -5
+          echo "=== screen capture ==="
+          timeout 15 screencapture -x /tmp/screen-clean.png && echo captured
+          mkdir -p artifacts && cp /tmp/screen-clean.png artifacts/ 2>/dev/null
 
-      - name: Capture screen
-        if: always()
-        run: |
-          screencapture -x /tmp/screen-quarantine.png || true
-          mkdir -p artifacts && cp /tmp/screen-quarantine.png artifacts/ 2>/dev/null
-
-      - name: Launch again without quarantine (post "Allow Anyway")
+      # Same launch with quarantine still attached (pre-approval). `open` may
+      # block on the Gatekeeper decision in an unattended session, hence the
+      # timeout wrapper; we only record what happens.
+      - name: Launch with quarantine (pre-approval, observed only)
         if: always()
         run: |
           set +e
-          pkill -f obelisk-app || true
-          sleep 2
-          xattr -cr Obelisk.app
-          open Obelisk.app --stdout /tmp/open2-out.log --stderr /tmp/open2-err.log
-          sleep 15
-          echo "=== process (no quarantine) ==="
+          timeout 20 pkill -f obelisk-app; sleep 2
+          xattr -w com.apple.quarantine "0081;66f00000;Safari;FB50F48F-1E4E-43B9-A8C5-7C4B1E9C21A5" Obelisk.app
+          timeout 60 open Obelisk.app --stdout /tmp/q-out.log --stderr /tmp/q-err.log
+          echo "open rc=$?"
+          sleep 10
+          echo "=== process (quarantine) ==="
           pgrep -fl obelisk-app || echo "no process"
-          echo "=== windows (System Events) ==="
-          osascript -e 'tell application "System Events" to tell process "obelisk-app" to get name of every window' 2>&1
-          screencapture -x /tmp/screen-clean.png || true
-          cp /tmp/screen-clean.png artifacts/ 2>/dev/null
-          cp /tmp/open2-out.log /tmp/open2-err.log artifacts/ 2>/dev/null
+          echo "=== app stdout (quarantine) ==="
+          cat /tmp/q-out.log 2>/dev/null
+          echo "=== app stderr (quarantine) ==="
+          cat /tmp/q-err.log 2>/dev/null
+          timeout 15 screencapture -x /tmp/screen-quarantine.png && cp /tmp/screen-quarantine.png artifacts/ 2>/dev/null
 
       - name: Check for crash reports
         if: always()
