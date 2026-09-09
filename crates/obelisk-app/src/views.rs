@@ -502,6 +502,10 @@ pub struct MemoryView {
     pub on_undo: MemoryUndoFn,
     pub on_open_session: MemoryOpenSessionFn,
     pub on_sort: MemorySortFn,
+    /// Detail body: show the markdown source instead of rendered (#11).
+    pub detail_source: bool,
+    /// Toggle the detail source view (#11).
+    pub on_toggle_detail_source: MemorySortFn,
     /// Keyboard: move the cursor by `delta` rows.
     pub on_cursor_move: MemoryCursorFn,
     /// Keyboard: open the cursor row's detail (Enter).
@@ -584,10 +588,18 @@ impl RenderOnce for MemoryView {
         let selected_memory = self.selected.and_then(|ix| self.memories.get(ix));
 
         let on_open_session = self.on_open_session.clone();
+        let show_source = self.detail_source;
+        let on_toggle_source = self.on_toggle_detail_source.clone();
         let detail = selected_memory.map(|memory| {
             let content = data::read_memory_file(&memory.path);
             let on_open_session = on_open_session.clone();
-            memory_view_detail(memory, content.as_deref(), &on_open_session)
+            memory_view_detail(
+                memory,
+                content.as_deref(),
+                show_source,
+                &on_toggle_source,
+                &on_open_session,
+            )
         });
 
         let mut container = gpui::div()
@@ -888,6 +900,8 @@ fn memory_tab_chip(
 fn memory_view_detail(
     memory: &MemoryEntry,
     content: Option<&str>,
+    show_source: bool,
+    on_toggle_source: &MemorySortFn,
     on_open_session: &MemoryOpenSessionFn,
 ) -> impl IntoElement + use<> {
     let on_open_session = on_open_session.clone();
@@ -961,6 +975,23 @@ fn memory_view_detail(
                 .flex()
                 .items_center()
                 .gap_3()
+                .child({
+                    let on_toggle_source = on_toggle_source.clone();
+                    gpui::div()
+                        .id("memory-source-toggle")
+                        .px_3()
+                        .py_1p5()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(crate::theme::HAIRLINE_STRONG)
+                        .text_size(crate::theme::TEXT_SM)
+                        .font_family(crate::theme::MONO)
+                        .text_color(crate::theme::FG_2)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(crate::theme::SURFACE_STRONG))
+                        .child(if show_source { "source" } else { "rendered" })
+                        .on_click(move |_e, window, cx| on_toggle_source(window, cx))
+                })
                 .child(
                     gpui::div()
                         .id("memory-open-session")
@@ -1034,10 +1065,16 @@ fn memory_view_detail(
         })
         .child(
             if let Some(content) = content.filter(|content| !content.is_empty()) {
-                gpui::div()
-                    .text_size(px(12.0))
-                    .child(Markdown::new(content).base_font_size(px(12.0)))
-                    .into_any_element()
+                if show_source {
+                    // Source view (parity #11): verbatim markdown.
+                    let lines: Vec<String> = content.split('\n').map(str::to_string).collect();
+                    code_block_lines(&lines)
+                } else {
+                    gpui::div()
+                        .text_size(px(12.0))
+                        .child(Markdown::new(content).base_font_size(px(12.0)))
+                        .into_any_element()
+                }
             } else {
                 gpui::div()
                     .text_size(px(12.0))
@@ -1046,6 +1083,34 @@ fn memory_view_detail(
                     .into_any_element()
             },
         )
+}
+
+/// Verbatim code lines for the memory source view (#11).
+fn code_block_lines(lines: &[String]) -> gpui::AnyElement {
+    let mut body = gpui::div().flex().flex_col();
+    for (index, line) in lines.iter().enumerate() {
+        body = body.child(
+            gpui::div()
+                .flex()
+                .gap_3()
+                .text_size(px(11.0))
+                .font_family(crate::theme::MONO)
+                .line_height(gpui::relative(1.45))
+                .child(
+                    gpui::div()
+                        .w(px(28.0))
+                        .text_color(crate::theme::MUTED_2)
+                        .flex_shrink_0()
+                        .child((index + 1).to_string()),
+                )
+                .child(
+                    gpui::div()
+                        .text_color(gpui::rgb(0xa9b1d6))
+                        .child(line.clone()),
+                ),
+        );
+    }
+    body.into_any_element()
 }
 
 /// List-style timestamp (Vue `fmtListTime`): today HH:MM; this year

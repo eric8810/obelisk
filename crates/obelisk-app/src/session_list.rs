@@ -346,7 +346,7 @@ impl RenderOnce for SessionListView {
                             .child(
                                 gpui::div().w(px(220.0)).child(
                                     Input::new(&search)
-                                        .placeholder("Search sessions…")
+                                        .placeholder("Search sessions…  ( / to focus )")
                                         .cleanable(),
                                 ),
                             )

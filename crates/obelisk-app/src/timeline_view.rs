@@ -150,6 +150,10 @@ pub struct TimelineView {
     /// The FTS query behind the focus jump (parity #52): rendered as a
     /// matched chip on the highlighted row.
     pub matched_query: Option<String>,
+    /// Header fields (parity #1-2): git branch at session start and the
+    /// session's relative end time, when known.
+    pub branch: Option<String>,
+    pub last_active: Option<String>,
 }
 
 /// Callback fired when the user leaves the timeline (back link or Escape).
@@ -228,6 +232,18 @@ impl RenderOnce for TimelineView {
                                     .text_size(px(12.0))
                                     .text_color(gpui::rgb(0x77777f))
                                     .child(gpui::div().child(format!("● {source}")))
+                                    .children(
+                                        self.branch
+                                            .clone()
+                                            .filter(|branch| !branch.is_empty())
+                                            .map(|branch| gpui::div().child(branch)),
+                                    )
+                                    .children(
+                                        self.last_active
+                                            .clone()
+                                            .filter(|when| !when.is_empty())
+                                            .map(|when| gpui::div().child(when)),
+                                    )
                                     .child(
                                         gpui::div().child(format!("{item_count} timeline items")),
                                     ),
@@ -422,16 +438,36 @@ fn timeline_item_view(
     } else if let Some(text) = message.text.as_deref() {
         // Message text: markdown for every role (Vue renders all message
         // bodies through marked, incl. images). Sizes follow the font
-        // scale (parity #5).
+        // scale (parity #5). User rows carry a subtle bubble background
+        // (parity #7).
         if !text.is_empty() {
             let body_size = px(13.0 * text_scale);
-            column = column.child(gpui::div().text_size(body_size).child(markdown_body(
+            // User rows carry a subtle bubble background (parity #7);
+            // plain divs (not Stateful) have no `.when`, so build both.
+            let bubble = if is_user {
+                gpui::div()
+                    .rounded_lg()
+                    .bg(gpui::rgba(0x16161cf2))
+                    .px_3()
+                    .py_2()
+            } else {
+                gpui::div()
+            };
+            column = column.child(bubble.text_size(body_size).child(markdown_body(
                 text,
                 body_size,
                 &message.cwd,
                 home,
             )));
         }
+    } else if message.tool_calls.is_empty() {
+        // Empty body placeholder (parity #8).
+        column = column.child(
+            gpui::div()
+                .text_size(px(12.0))
+                .text_color(crate::theme::MUTED)
+                .child("(no text content)"),
+        );
     }
 
     // Tool calls with their presentations.
