@@ -36,7 +36,7 @@ jobs:
             artifact: obelisk-windows-x86_64.zip
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.120.0
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -89,7 +89,7 @@ jobs:
             artifact: obelisk-app-windows-x86_64.zip
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.120.0
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2

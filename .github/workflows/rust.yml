@@ -17,7 +17,7 @@ jobs:
       # Pin to the toolchain from rust-toolchain.toml (not @stable): the repo
       # file overrides rustup, so a @stable install would leave rustfmt/clippy
       # missing from the pinned toolchain.
-      - uses: dtolnay/rust-toolchain@1.120.0
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -54,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Pin to the toolchain from rust-toolchain.toml (see the check job).
-      - uses: dtolnay/rust-toolchain@1.120.0
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
