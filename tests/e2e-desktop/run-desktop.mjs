@@ -372,11 +372,12 @@ const scenarios = {
     // The chips sit just below the Settings header — near the very top of
     // the window (measured Y≈9%); the crop must start at y=0 to include
     // them (a crop starting at 10% pushed them out and the locate
-    // hallucinated coordinates).
+    // hallucinated coordinates). X: start right after the sidebar (~200px)
+    // — a 25%-width margin cut off the leftmost chip (VS Code) entirely.
     const chipCrop = (win) => ({
-      x: Math.round(win.width * 0.25),
+      x: 200,
       y: 0,
-      w: Math.round(win.width * 0.75),
+      w: win.width - 200,
       h: Math.round(win.height * 0.35),
     });
     const switchScheme = async (want) => {
@@ -524,10 +525,13 @@ const scenarios = {
     d.pressKey('v', { windowId: ctx.win.window_id });
     d.sleep(1800);
     shot = evidence.shot(ctx, 'jump');
+    // Quote-anchored: the old open question let the model describe the
+    // timeline and highlight perfectly without ever writing the keyword
+    // 'Sessions' (the back-link text), failing a passing feature.
     await d.visionExpects(
       shot,
-      'Describe the current main panel view. What kind of content is shown, and is any row carrying a colored highlight border? Answer plainly.',
-      ['Sessions'],
+      'Quote the back-link text at the top left of the main panel exactly as written, then say whether any row carries a colored highlight border.',
+      ['Sessions', 'highlight'],
     );
     // Returning via the sidebar row (select_view drops the timeline and
     // refocuses the memory panel; Escape proved unreliable here).
