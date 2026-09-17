@@ -169,14 +169,18 @@ export function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Sidebar nav row centers (window coords), derived from the standard
- * layout; re-validated per run by the runner's probe. */
-// Sidebar nav coordinates (window-relative physical px), calibrated by
-// click-probing the ported sidebar (brand 36px + Library/Stats/Projects
-// sections with 28px rows; see the M4 visual-parity rework).
+/** Sidebar nav row centers (window coords). The defaults below were
+ * calibrated by click-probing the ported sidebar (brand 36px + Library/
+ * Stats/Projects sections with 28px rows; see the M4 visual-parity rework)
+ * on a 1250×749 window at scale 1.6. Any other WM policy, screen scale, or
+ * window size shifts the rows, so the runner vision-calibrates them from a
+ * probe screenshot once per run (calibrateNav below) — the defaults are
+ * only the fallback when the vision pass cannot parse a row. */
 export const NAV = {
   Sessions: { x: 120, y: 164 },
   Memory: { x: 120, y: 217 },
+  Active: { x: 120, y: 270 },
+  Archived: { x: 120, y: 322 },
   Activity: { x: 120, y: 457 },
   Recap: { x: 120, y: 508 },
   Settings: { x: 120, y: 735 },
@@ -185,8 +189,91 @@ export const NAV = {
 /** First project row in the sidebar's Projects section. */
 export const NAV_PROJECT = { x: 120, y: 645 };
 
-/** Session-list search box center (window coords). */
+/** Session-list search box center (window coords); re-derived by
+ * calibrateNav (its position follows the header, which resizes with the
+ * window). */
 export const SEARCH_BOX = { x: 800, y: 61 };
+
+/** Vision-locate `what` in a screenshot, returning window-relative pixel
+ *  coordinates. Pass `crop` ({x,y,w,h}, window coords) to restrict the
+ *  search: percentage answers on a small crop keep the absolute error
+ *  small, while full-window shots drift (recorded in D16's history).
+ *  `fallback` ({x,y}, optional) is returned when the model answer cannot
+ *  be parsed; without one a parse failure throws. */
+export function locateInWindow(win, shotPath, what, fallback = null, crop = null) {
+  const region = crop || { x: 0, y: 0, w: win.width, h: win.height };
+  let target = shotPath;
+  if (crop) {
+    target = `/tmp/obelisk-locate-${Date.now()}.png`;
+    sh(`convert ${JSON.stringify(shotPath)} -crop ${crop.w}x${crop.h}+${crop.x}+${crop.y} +repage ${JSON.stringify(target)}`);
+  }
+  const answer = sh(
+    `dim image read ${JSON.stringify(target)} --prompt 'Find ${what}. Give its center as X=NN% Y=NN% (percentages of THIS image). Format only, no other text.'`,
+    { timeout: 300_000 },
+  );
+  const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%?\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%?/i);
+  if (!m) {
+    if (fallback) return fallback;
+    throw new Error(`vision locate failed for "${what}": ${answer.slice(0, 160)}`);
+  }
+  return {
+    x: region.x + Math.round((Number(m[1]) / 100) * region.w),
+    y: region.y + Math.round((Number(m[2]) / 100) * region.h),
+  };
+}
+
+let navCalibrated = false;
+
+/** Has calibrateNav already succeeded this run? */
+export function navReady() {
+  return navCalibrated;
+}
+
+/** Re-derive the sidebar nav rows and the list search box from a probe
+ *  screenshot of the sessions view, once per run. Mutates the exported
+ *  NAV/SEARCH_BOX objects in place so every scenario click follows the
+ *  actual geometry. Rows the vision pass cannot parse keep their
+ *  hardcoded default. */
+export function calibrateNav(win, probeShotPath) {
+  if (navCalibrated) return;
+  const railW = Math.round(win.width * 0.25);
+  const answer = sh(
+    `dim image read ${JSON.stringify(probeShotPath)} --prompt 'This is an app window: a left sidebar rail and a main panel. Locate these SIDEBAR rows: Sessions, Memory, Active, Archived, Activity, Recap, Settings. Output one line per row, exactly: NAME X=NN% Y=NN% (percentages of THIS image). Format only.'`,
+    { timeout: 300_000 },
+  );
+  let found = 0;
+  for (const line of answer.split('\n')) {
+    const nm = line.match(/(sessions|memory|active|archived|activity|recap|settings)/i);
+    if (!nm) continue;
+    const xs = line.match(/x\s*[=:]\s*(\d+(?:\.\d+)?)\s*%/i);
+    const ys = line.match(/y\s*[=:]\s*(\d+(?:\.\d+)?)\s*%/i);
+    if (!xs || !ys) continue;
+    const name = nm[1][0].toUpperCase() + nm[1].slice(1).toLowerCase();
+    if (!NAV[name]) continue;
+    NAV[name] = {
+      x: Math.round((Number(xs[1]) / 100) * win.width),
+      y: Math.round((Number(ys[1]) / 100) * win.height),
+    };
+    found += 1;
+  }
+  // The search box lives in the main-panel header, right of the sidebar.
+  const sb = locateInWindow(
+    win,
+    probeShotPath,
+    'the search input box in the panel header (top right, placeholder text "Search sessions")',
+    null,
+    { x: railW, y: 0, w: win.width - railW, h: Math.round(win.height * 0.15) },
+  );
+  if (sb) {
+    SEARCH_BOX.x = sb.x;
+    SEARCH_BOX.y = sb.y;
+  }
+  navCalibrated = true;
+  console.log(
+    `nav calibrated: ${found}/7 rows vision-derived at ${win.width}x${win.height}` +
+      (sb ? ', search box too' : '; search box kept default'),
+  );
+}
 
 export class Evidence {
   constructor(runDir) {

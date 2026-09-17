@@ -50,7 +50,31 @@ async function setup(scenario) {
   d.sh(`${JSON.stringify(binary)} --build`, { env: { ...process.env, HOME: home } });
   const logPath = join(runDir, `${scenario}-app.log`);
   const { pid, win } = d.launchApp({ binary: appBinary, logPath, env: { HOME: home } });
+  // Vision-calibrate the sidebar nav rows / search box once per run — the
+  // hardcoded grid assumes the geometry the suite was first calibrated on.
+  if (!d.navReady()) {
+    d.calibrateNav(win, evidence.shot({ name: scenario, win }, `${scenario}-nav-probe`));
+  }
   return { home, corpus, logPath, pid, win };
+}
+
+/** Click the first session row to open the timeline. Vision-located on a
+ *  crop of the main panel (full-window coordinates drift); falls back to
+ *  the legacy calibrated grid position. */
+function openFirstSession(ctx) {
+  const pos = d.locateInWindow(
+    ctx.win,
+    evidence.shot(ctx, 'pre-open-session'),
+    'the first session row in the sessions list',
+    { x: 700, y: 175 },
+    {
+      x: Math.round(ctx.win.width * 0.25),
+      y: 0,
+      w: Math.round(ctx.win.width * 0.75),
+      h: Math.round(ctx.win.height * 0.5),
+    },
+  );
+  d.clickAt(ctx.win, pos.x, pos.y);
 }
 
 async function teardown(ctx) {
@@ -82,7 +106,7 @@ const scenarios = {
 
   D2_project_session_timeline: async (ctx) => {
     // Open the timeline.
-    d.clickAt(ctx.win, 700, 175);
+    openFirstSession(ctx);
     d.sleep(1400);
     let shot = evidence.shot(ctx, 'timeline-top');
     await d.visionExpects(shot, 'Is the timeline open with a "← Sessions" back link, the session title, and collapsed cards with chevrons (System/Thinking rows)?', ['Sessions', 'System', 'Thinking']);
@@ -94,7 +118,19 @@ const scenarios = {
     await d.visionExpects(shot, 'Are tool-call cards collapsed to single header rows (chevron, gear icon, tool name bash/grep, no command box)?', ['bash']);
 
     // Expand the first tool card (chevron at the row head).
-    d.clickAt(ctx.win, 560, 205);
+    const chevron = d.locateInWindow(
+      ctx.win,
+      shot,
+      'the small triangle/chevron at the left edge of the first tool-call card row',
+      { x: 560, y: 205 },
+      {
+        x: Math.round(ctx.win.width * 0.25),
+        y: Math.round(ctx.win.height * 0.15),
+        w: Math.round(ctx.win.width * 0.75),
+        h: Math.round(ctx.win.height * 0.7),
+      },
+    );
+    d.clickAt(ctx.win, chevron.x, chevron.y);
     d.sleep(900);
     shot = evidence.shot(ctx, 'tools-expanded');
     await d.visionExpects(shot, 'Did a tool card expand: chevron now pointing down, a body with a "$" command prompt box and a "{ } Raw" button?', ['Raw']);
@@ -107,7 +143,7 @@ const scenarios = {
   },
 
   D3_scroll_follow: async (ctx) => {
-    d.clickAt(ctx.win, 700, 175);
+    openFirstSession(ctx);
     d.sleep(1400);
     d.pressKey('Page_Down', { focus: true, windowId: ctx.win.window_id });
     d.sleep(700);
@@ -196,10 +232,10 @@ const scenarios = {
     await d.visionExpects(
       shot,
       'In the memory panel: which of the two tabs near the top is highlighted, and which memory row summary is listed below? Quote them.',
-      ['Active', 'Prefer async IO'],
+      ['Active', 'Prefer async'],
     );
     // The archived memory lives under the Archived tab (sidebar sub-row).
-    d.clickAt(ctx.win, 120, 322);
+    d.clickAt(ctx.win, d.NAV.Archived.x, d.NAV.Archived.y);
     d.sleep(1000);
     shot = evidence.shot(ctx, 'memory-archived');
     await d.visionExpects(
@@ -209,14 +245,16 @@ const scenarios = {
     );
     // Open the active memory's detail via the keyboard path (j places the
     // cursor, m opens the detail — stable where pixel clicks are not).
-    d.clickAt(ctx.win, 120, 270);
+    d.clickAt(ctx.win, d.NAV.Active.x, d.NAV.Active.y);
     d.sleep(1000);
     d.pressKey('j', { windowId: ctx.win.window_id });
     d.sleep(500);
     d.pressKey('m', { windowId: ctx.win.window_id });
     d.sleep(900);
     shot = evidence.shot(ctx, 'memory-detail');
-    await d.visionExpects(shot, 'Below the list, is there a detail panel showing the memory file path and rendered markdown with the heading "Prefer async IO"?', ['Prefer async IO', 'memory-note.md']);
+    // The vision model renders the seeded "IO" as "I/O" about half the
+    // time, so the keyword stops at the unambiguous prefix.
+    await d.visionExpects(shot, 'Below the list, is there a detail panel showing the memory file path and rendered markdown with the heading "Prefer async IO"?', ['Prefer async', 'memory-note.md']);
   },
 
   D6_stats_recap: async (ctx) => {
@@ -246,8 +284,20 @@ const scenarios = {
     d.sleep(1200);
     shot = evidence.shot(ctx, 'recap-list');
     await d.visionExpects(shot, 'Does the Recap left column list one report file "2026-W36.json"?', ['2026-W36.json']);
-    // Select the row (the list rail occupies the left ~300px).
-    d.clickAt(ctx.win, 260, 150);
+    // Select the row (vision-located on a crop of the recap left rail).
+    const recapRow = d.locateInWindow(
+      ctx.win,
+      shot,
+      'the report row containing the text 2026-W36.json in the left list',
+      { x: 260, y: 150 },
+      {
+        x: Math.round(ctx.win.width * 0.25),
+        y: 0,
+        w: Math.round(ctx.win.width * 0.3),
+        h: ctx.win.height,
+      },
+    );
+    d.clickAt(ctx.win, recapRow.x, recapRow.y);
     d.sleep(1500);
     shot = evidence.shot(ctx, 'recap-detail');
     await d.visionExpects(shot, 'Does the Cover card render with the big title Cover Sentinel Alpha?', ['Sentinel Alpha']);
@@ -301,27 +351,8 @@ const scenarios = {
   },
 
   D10_settings_page: async (ctx) => {
-    // Locate Settings in the sidebar by vision on a cropped rail — the
-    // fixed NAV coordinate drifts with window placement.
-    {
-      const pre = evidence.shot(ctx, 'pre-settings');
-      const rail = '/tmp/d10-rail.png';
-      d.sh(`convert ${JSON.stringify(pre)} -crop 260x${ctx.win.height}+0+0 +repage ${rail}`);
-      const answer = d.sh(
-        `dim image read ${rail} --prompt 'Find the Settings item in this sidebar (near the bottom, with a sliders icon). Give its center as X=NN% Y=NN% (percentages of THIS image). Format only.'`,
-        { timeout: 300_000 },
-      );
-      const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%?\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%?/i);
-      if (m) {
-        d.clickAt(
-          ctx.win,
-          Math.round((Number(m[1]) / 100) * 260),
-          Math.round((Number(m[2]) / 100) * ctx.win.height),
-        );
-      } else {
-        d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
-      }
-    }
+    // Settings via the vision-calibrated nav row (see calibrateNav).
+    d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
     d.sleep(1200);
     let shot = evidence.shot(ctx, 'settings');
     await d.visionExpects(
@@ -330,20 +361,32 @@ const scenarios = {
       ['Editor scheme', 'VS Code', 'Provider roots'],
     );
     // Switch to Zed, then back — the chip position depends on wrapping, so
-    // click-then-verify with retries (and the settings.json write is the
-    // deterministic oracle).
+    // locate by vision per attempt and click-then-verify with retries (the
+    // settings.json write is the deterministic oracle).
     const settingsPath = join(ctx.home, '.obelisk', 'settings.json');
-    const schemeChips = { zed: { x: 1210, y: 330 }, vscode: { x: 560, y: 330 } };
+    const chipLabel = { zed: 'Zed', vscode: 'VS Code' };
+    const chipCrop = (win) => ({
+      x: Math.round(win.width * 0.25),
+      y: Math.round(win.height * 0.1),
+      w: Math.round(win.width * 0.75),
+      h: Math.round(win.height * 0.6),
+    });
     const switchScheme = async (want) => {
       const offsets = [0, -14, 14, -28, 28];
       for (let attempt = 0; attempt < offsets.length; attempt++) {
-        const chip = schemeChips[want];
         if (attempt > 0) {
           // Re-enter Settings to re-mount the page (mouse hit boxes on this
           // machine drift after the first frames; a fresh mount re-anchors).
           d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
           d.sleep(900);
         }
+        const chip = d.locateInWindow(
+          ctx.win,
+          evidence.shot(ctx, `settings-${want}-locate-${attempt}`),
+          `the editor-scheme chip labeled "${chipLabel[want]}"`,
+          { x: 560, y: 330 },
+          chipCrop(ctx.win),
+        );
         d.clickAt(ctx.win, chip.x, chip.y + offsets[attempt]);
         d.sleep(1200);
         if (readFileSync(settingsPath, 'utf8').includes(`"editorScheme": "${want}"`)) {
@@ -364,7 +407,7 @@ const scenarios = {
 
   D12_scroll_anchor_on_refresh: async (ctx) => {
     // Open the session and page into the middle of the timeline.
-    d.clickAt(ctx.win, 700, 175);
+    openFirstSession(ctx);
     d.sleep(1500);
     d.pressKey('Page_Down', { windowId: ctx.win.window_id });
     d.sleep(300);
@@ -416,7 +459,7 @@ const scenarios = {
     // session — the reading position must come back (again pixel-stable).
     d.pressKey('Escape', { windowId: ctx.win.window_id });
     d.sleep(700);
-    d.clickAt(ctx.win, 700, 175);
+    openFirstSession(ctx);
     d.sleep(1500);
     const reopened = evidence.shot(ctx, 'anchor-reopened');
     crop(reopened, '/tmp/d12-reopened-view.png');
@@ -516,12 +559,21 @@ const scenarios = {
     d.sleep(1000);
     const archived2 = d.sqlite(db, "SELECT deleted_at IS NOT NULL FROM memories WHERE id='e2e-mem-1';");
     if (archived2 !== '1') throw new ScenarioError('checkbox archive (x+d) did not land in the DB');
-    // Switch via the header Archived chip (the sidebar sub-row positions
-    // drift between launches; the header tabs are in a stable spot).
-    for (const x of [720, 700, 740, 680, 760]) {
-      d.clickAt(ctx.win, x, 169);
-      d.sleep(500);
-    }
+    // Switch via the header Archived chip (vision-located per attempt; the
+    // sidebar sub-rows also work but the header tabs are unambiguous).
+    const archivedTab = d.locateInWindow(
+      ctx.win,
+      evidence.shot(ctx, 'pre-archived-tab'),
+      'the "Archived" tab chip near the top of the memory panel (next to the "Active" tab)',
+      { x: 720, y: 169 },
+      {
+        x: Math.round(ctx.win.width * 0.25),
+        y: 0,
+        w: Math.round(ctx.win.width * 0.75),
+        h: Math.round(ctx.win.height * 0.25),
+      },
+    );
+    d.clickAt(ctx.win, archivedTab.x, archivedTab.y);
     d.sleep(700);
     shot = evidence.shot(ctx, 'archived-tab');
     await d.visionExpects(
@@ -809,7 +861,7 @@ const scenarios = {
     // coordinates kept drifting; pixels do not.
     const railTxt = '/tmp/d16-rail.txt';
     d.sh(
-      `convert ${JSON.stringify(shot)} -crop 300x${ctx.win.height - 200}+220+100 +repage txt:- > ${railTxt}`,
+      `convert ${JSON.stringify(shot)} -crop ${Math.round(ctx.win.width * 0.25)}x${ctx.win.height - 200}+${Math.round(ctx.win.width * 0.25)}+100 +repage txt:- > ${railTxt}`,
     );
     // Purple-ish pixels (antialiased node): blue-dominant, red mid, green low.
     const purple = [];
@@ -847,7 +899,8 @@ const scenarios = {
     if (!solid.length) throw new ScenarioError('no archetype node found in recap rail');
     const [start, end] = solid[0];
     const nodeY = Math.round((start + end) / 2);
-    const clickX = 220 + 240; // inside the row, right of the node
+    const railW = Math.round(ctx.win.width * 0.25);
+    const clickX = railW + Math.round(railW * 0.5); // inside the row, right of the node
     // Click below the node center: an upstream fc-gpui hitbox quirk lets
     // the sidebar's Memory/Archived row swallow clicks in a band around
     // the node's y; +30px lands cleanly inside the recap row's own area.
@@ -992,7 +1045,7 @@ const scenarios = {
   },
 
   D11_live_session_follow: async (ctx) => {
-    d.clickAt(ctx.win, 700, 175);
+    openFirstSession(ctx);
     d.sleep(1400);
     d.pressKey('End', { focus: true, windowId: ctx.win.window_id });
     d.sleep(1000);
