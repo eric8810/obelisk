@@ -29,3 +29,9 @@ updates:
       npm-dependencies:
         patterns:
           - '*'
+    ignore:
+      # typescript-eslint (any 8.x) peer-requires typescript <6.1.0; a TS
+      # major bump breaks `npm ci` (the Publish Skill workflow). Lift this
+      # only when typescript-eslint supports the newer major.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]

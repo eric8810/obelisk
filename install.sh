@@ -36,17 +36,12 @@ install_binary() {
     aarch64|arm64) arch_name='aarch64' ;;
     *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
   esac
-  if [ "$os_name" = 'macos' ] && [ "$arch_name" = 'x86_64' ]; then
-    # Rosetta 2 runs the aarch64 build; the x86_64 artifact stays available
-    # for native use under Rosetta-less environments.
-    artifact="obelisk-macos-x86_64.zip"
-    extract='unzip -o'
-    inner='obelisk.exe.dSYM 2>/dev/null || true; obelisk.exe'
-  else
-    artifact="obelisk-${os_name}-${arch_name}.tar.gz"
-    extract='tar -xzf'
-    inner='obelisk'
-  fi
+  # Every platform ships a tar.gz (see release-rust.yml); the old Intel-mac
+  # special case expected a .zip that the release workflow never produced,
+  # so it always 404'd.
+  artifact="obelisk-${os_name}-${arch_name}.tar.gz"
+  extract='tar -xzf'
+  inner='obelisk'
 
   if ! command -v curl >/dev/null 2>&1; then
     echo 'Binary installation requires curl.' >&2
@@ -76,7 +71,11 @@ install_binary() {
         echo 'Checksum verification failed.' >&2
         exit 1
       }
+    else
+      echo 'Warning: no sha256 tool found; skipping checksum verification.' >&2
     fi
+  else
+    echo 'Warning: SHA256SUMS not available for this release; skipping checksum verification.' >&2
   fi
   (cd "$tmp" && $extract "$artifact")
   mkdir -p "$BIN_DIR"
