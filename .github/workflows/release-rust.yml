@@ -35,8 +35,8 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: obelisk-windows-x86_64.zip
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -63,7 +63,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/obelisk.exe" dist/
           Compress-Archive -Path dist/obelisk.exe -DestinationPath "${{ matrix.artifact }}"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
@@ -88,8 +88,8 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: obelisk-app-windows-x86_64.zip
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -164,7 +164,7 @@ jobs:
           Compress-Archive -Path dist/obelisk-app.exe -DestinationPath "${{ matrix.artifact }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
@@ -174,8 +174,8 @@ jobs:
     needs: [build, build-app]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -184,7 +184,7 @@ jobs:
           cd dist
           sha256sum *.tar.gz *.zip > SHA256SUMS
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true
