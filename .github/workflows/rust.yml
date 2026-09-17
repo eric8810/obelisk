@@ -14,10 +14,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pin to the toolchain from rust-toolchain.toml (not @stable): the repo
+      # file overrides rustup, so a @stable install would leave rustfmt/clippy
+      # missing from the pinned toolchain.
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The GPUI app in the workspace links X11 + xkbcommon on Linux, so the
+      # Test / release-build steps need the xcb client libraries.
+      - name: Install Linux graphics dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxau-dev libxdmcp-dev
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -42,8 +53,18 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pin to the toolchain from rust-toolchain.toml (see the check job).
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      # The workspace includes the GPUI desktop app, which links X11 +
+      # xkbcommon on Linux (xcb client libraries).
+      - name: Install Linux graphics dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxau-dev libxdmcp-dev
       - run: cargo build --workspace --release --target ${{ matrix.target }}
