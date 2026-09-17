@@ -16,6 +16,11 @@ updates:
       actions:
         patterns:
           - '*'
+    ignore:
+      # The toolchain pin must stay in lockstep with rust-toolchain.toml;
+      # bump it manually with the file (dependabot picks a nonexistent Rust
+      # version tag and breaks CI).
+      - dependency-name: dtolnay/rust-toolchain
   - package-ecosystem: npm
     directory: /
     schedule:
