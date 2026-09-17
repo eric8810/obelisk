@@ -365,11 +365,15 @@ const scenarios = {
     // settings.json write is the deterministic oracle).
     const settingsPath = join(ctx.home, '.obelisk', 'settings.json');
     const chipLabel = { zed: 'Zed', vscode: 'VS Code' };
+    // The chips sit just below the Settings header — near the very top of
+    // the window (measured Y≈9%); the crop must start at y=0 to include
+    // them (a crop starting at 10% pushed them out and the locate
+    // hallucinated coordinates).
     const chipCrop = (win) => ({
       x: Math.round(win.width * 0.25),
-      y: Math.round(win.height * 0.1),
+      y: 0,
       w: Math.round(win.width * 0.75),
-      h: Math.round(win.height * 0.6),
+      h: Math.round(win.height * 0.35),
     });
     const switchScheme = async (want) => {
       const offsets = [0, -14, 14, -28, 28];
@@ -502,9 +506,13 @@ const scenarios = {
     d.pressKey('m', { windowId: ctx.win.window_id });
     d.sleep(1100);
     let shot = evidence.shot(ctx, 'detail');
+    // Quote-anchored prompt: asking the model to quote text from two
+    // specific places keeps it from hallucinating an empty list off the
+    // sidebar's stale count badges (observed: same image, one answer with
+    // the row, one answer claiming the empty state).
     await d.visionExpects(
       shot,
-      'Look at the bottom of the main panel, below the list. Quote the metadata line (project and file name) and any action button labels you see there.',
+      'Quote the file name shown in the first memory list row, and quote the memory file path shown in the detail panel below the list (both should contain e2e-mem-1.md). Also quote any action button labels you see in the detail panel.',
       ['e2e-mem-1'],
     );
     // 2) v: jump into the conversation; the timeline opens with the first
@@ -843,25 +851,45 @@ const scenarios = {
     );
 
     // Open the Recap view via the deterministic keyboard shortcut
-    // (Ctrl+4; sidebar clicks drift with window placement).
-    d.pressKey('ctrl-4', { windowId: ctx.win.window_id, focus: false });
-    d.sleep(1500);
-    let shot = evidence.shot(ctx, 'list');
-    // Click the recap row in the left list to open its cards. Vision
-    // coordinates drift on full-window shots, so crop the left rail and
-    // map percentages back to window coordinates.
-    // Guard: the Recap view must be open before trusting rail coordinates.
-    await d.visionExpects(
-      shot,
-      'Is this the Recap view (header Recap, with a left rail)? one line.',
-      ['Recap'],
-    );
+    // (Ctrl+4). The press can race app readiness right after launch, so
+    // retry with a real guard: the report row must be visible in the MAIN
+    // panel ('Recap' alone also matches the sidebar nav row and passes
+    // spuriously on the Sessions view).
+    let shot = null;
+    let recapOpen = false;
+    for (let attempt = 0; attempt < 3 && !recapOpen; attempt++) {
+      // The first press can race app readiness right after launch, and
+      // the injection needs the window focused (nothing has clicked into
+      // the app yet, unlike D17 whose flow focuses earlier) — focus it
+      // explicitly per press.
+      d.sleep(attempt === 0 ? 2000 : 800);
+      d.pressKey('ctrl-4', { windowId: ctx.win.window_id, focus: true });
+      d.sleep(1600);
+      shot = evidence.shot(ctx, `list-${attempt}`);
+      // Neutral quote-only prompt: naming the expected file in the
+      // question invites the model to parrot it back (observed) and the
+      // guard passes on the Sessions view.
+      const answer = await d.visionExpects(
+        shot,
+        'List every row you can see in the main panel (right of the sidebar), quoting each row label exactly as written. If the panel is a sessions list instead, say so.',
+        [],
+      );
+      recapOpen = /recap-e2e\.json|w37/i.test(answer);
+      if (!recapOpen) evidence.text(`D16-recap-nav-attempt-${attempt}.txt`, answer);
+    }
+    if (!recapOpen) {
+      throw new ScenarioError('Recap view never opened via ctrl-4 (3 attempts)');
+    }
     // Locate the W37 row by scanning the rail for the archetype node: a
     // solid ~10px purple dot (167,139,250) at the row's left edge. Vision
-    // coordinates kept drifting; pixels do not.
+    // coordinates kept drifting; pixels do not. The rail starts right
+    // after the sidebar — derive its x from the calibrated nav row center
+    // (rows sit at ~half the sidebar width) instead of window percentages.
+    const sidebarW = d.NAV.Sessions.x * 2;
+    const railX = sidebarW + 10;
     const railTxt = '/tmp/d16-rail.txt';
     d.sh(
-      `convert ${JSON.stringify(shot)} -crop ${Math.round(ctx.win.width * 0.25)}x${ctx.win.height - 200}+${Math.round(ctx.win.width * 0.25)}+100 +repage txt:- > ${railTxt}`,
+      `convert ${JSON.stringify(shot)} -crop 300x${ctx.win.height - 200}+${railX}+100 +repage txt:- > ${railTxt}`,
     );
     // Purple-ish pixels (antialiased node): blue-dominant, red mid, green low.
     const purple = [];
@@ -881,7 +909,10 @@ const scenarios = {
     }
     const nodeYs = [];
     for (const [y, xs] of byY) {
-      if (xs.length >= 6) nodeYs.push(y);
+      // >=4 in one row: the node is ~10px at scale 1.6 but smaller at
+      // other scales; 4 keeps the antialiased edge rows out while
+      // catching small solid nodes.
+      if (xs.length >= 4) nodeYs.push(y);
     }
     nodeYs.sort((a, b) => a - b);
     // Collapse consecutive runs into node centers.
@@ -895,12 +926,11 @@ const scenarios = {
         nodes.push([y, y, 1]);
       }
     }
-    const solid = nodes.filter(([, , n]) => n >= 5);
+    const solid = nodes.filter(([, , n]) => n >= 4);
     if (!solid.length) throw new ScenarioError('no archetype node found in recap rail');
     const [start, end] = solid[0];
     const nodeY = Math.round((start + end) / 2);
-    const railW = Math.round(ctx.win.width * 0.25);
-    const clickX = railW + Math.round(railW * 0.5); // inside the row, right of the node
+    const clickX = railX + 240; // inside the row, right of the node
     // Click below the node center: an upstream fc-gpui hitbox quirk lets
     // the sidebar's Memory/Archived row swallow clicks in a band around
     // the node's y; +30px lands cleanly inside the recap row's own area.
@@ -909,26 +939,62 @@ const scenarios = {
     d.clickAt(ctx.win, clickX, clickY);
     await expectCard('cover', 'Is a large card visible now? Quote the big title text on the card.', ['Sentinel Alpha']);
 
-    // Navigate with the next arrow, located by pixel-scanning the bottom
-    // nav strip for the purple arrow glyph (vision coordinates drift on
-    // full-window shots; pixels do not).
-    // Locate the next arrow by vision on the bottom nav strip: the strip
-    // also holds purple Export/Copy buttons, so pixels alone pick the
-    // wrong control. A small crop keeps vision coordinates reliable.
-    const nextArrowPos = (fromShot) => {
-      const strip = '/tmp/d16-nav.png';
+    // Navigate with the next chevron. The bottom nav row renders: prev
+    // chevron · dots+labels row · next chevron · Export/Copy buttons —
+    // the chevrons are TINY (≈20px wide, 3px tall) glyphs in the gaps.
+    // Vision keeps hallucinating round "arrow buttons" that are not on
+    // screen (it once pointed at the Export button text, once at the
+    // active dot), so this is pure pixel geometry:
+    //   1. the dots row = the x-cluster containing a tall purple run
+    //      (the active card's filled dot);
+    //   2. the next chevron = the first small cluster right of it.
+    const nextArrowPos = () => {
+      const stripTxt = '/tmp/d16-nav.txt';
       d.sh(
-        `convert ${JSON.stringify(fromShot)} -crop '${ctx.win.width}x100+0+${ctx.win.height - 100}' +repage ${strip}`,
+        `convert ${JSON.stringify(evidence.shot(ctx, 'nav-strip'))} -crop '${ctx.win.width}x130+0+${ctx.win.height - 130}' +repage txt:- > ${stripTxt}`,
       );
-      const answer = d.sh(
-        `dim image read ${strip} --prompt 'Find the right-pointing circular arrow button between the row of labeled dots and the text buttons (NOT the text buttons). Give its center as X=NN% Y=NN% (percentages of THIS image). Format only.'`,
-        { timeout: 300_000 },
-      );
-      const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%?\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%?/i);
-      if (!m) throw new ScenarioError(`next arrow not located: ${answer.slice(0, 160)}`);
+      const pts = [];
+      for (const line of readFileSync(stripTxt, 'utf8').split('\n')) {
+        const m = line.match(/^(\d+),(\d+): \((\d+),(\d+),(\d+)\)/);
+        if (!m) continue;
+        const x = Number(m[1]);
+        const y = Number(m[2]);
+        const [r, g, b] = [Number(m[3]), Number(m[4]), Number(m[5])];
+        const bright = Math.max(r, g, b);
+        if (y < 70 || y > 120 || bright <= 50) continue;
+        const purple = b > 190 && b - g > 50 && r > 90 && r < 220;
+        pts.push({ x, y, bright, purple });
+      }
+      pts.sort((a, b) => a.x - b.x);
+      const clusters = [];
+      for (const p of pts) {
+        const last = clusters[clusters.length - 1];
+        if (last && p.x - last.maxX <= 12) {
+          last.maxX = p.x;
+          last.pts.push(p);
+        } else {
+          clusters.push({ minX: p.x, maxX: p.x, pts: [p] });
+        }
+      }
+      // The dots row: contains a tall purple run (the active dot).
+      const dotsRow = clusters.find((c) => {
+        const pur = c.pts.filter((p) => p.purple);
+        if (pur.length < 20) return false;
+        const ys = pur.map((p) => p.y);
+        return Math.max(...ys) - Math.min(...ys) >= 12;
+      });
+      if (!dotsRow) {
+        throw new ScenarioError('recap dots row not found in the nav strip');
+      }
+      const after = clusters.filter((c) => c.minX > dotsRow.maxX + 5);
+      if (!after.length) {
+        throw new ScenarioError('next chevron not found right of the dots row');
+      }
+      const chev = after[0];
+      const ys = chev.pts.map((p) => p.y);
       return [
-        Math.round((Number(m[1]) / 100) * ctx.win.width),
-        Math.round(ctx.win.height - 100 + (Number(m[2]) / 100) * 100),
+        Math.round((chev.minX + chev.maxX) / 2),
+        ctx.win.height - 130 + Math.round((Math.min(...ys) + Math.max(...ys)) / 2),
       ];
     };
 
@@ -939,17 +1005,34 @@ const scenarios = {
       d.sleep(1200);
     };
 
+    // Walk the deck with verified steps: a single unverified next-click
+    // sometimes lands in the fc-gpui hitbox quirk band and silently does
+    // nothing. Re-locate the arrow on a fresh screenshot per click, then
+    // confirm the card advanced; retry with a small y offset when it did
+    // not. Returns once the card titled `wantTitle` is on screen.
+    const walkNext = async (wantTitle, label) => {
+      for (let i = 0; i < 5; i++) {
+        const [ax, ay] = nextArrowPos();
+        d.clickAt(ctx.win, ax, ay + (i > 0 ? 10 : 0));
+        d.sleep(1400);
+        const cardShot = evidence.shot(ctx, `card-${label}-${i}`);
+        const answer = await d.visionExpects(
+          cardShot,
+          'Quote the big title text of the large card currently shown. Format: just the title.',
+          [],
+        );
+        if (answer.toLowerCase().includes(wantTitle.toLowerCase())) return;
+      }
+      throw new ScenarioError(`next-arrow walk never reached the card titled ${wantTitle}`);
+    };
+
     // Path card (one next from Cover).
-    clickNext();
-    await expectCard('path', 'Which card is shown now — quote its title and the eyebrow text at the top of the card.', ['Sentinel Beta']);
+    await walkNext('Sentinel Beta', 'path');
+    await expectCard('path-checked', 'Which card is shown now — quote its title and the eyebrow text at the top of the card.', ['Sentinel Beta']);
 
     // Closing card (three more nexts: Vibe, Workflow, Closing).
-    clickNext();
-    d.sleep(1400);
-    clickNext();
-    d.sleep(1400);
-    clickNext();
-    await expectCard('closing', 'Quote the large centered headline of this card and one line from the receipt list below it.', ['Sentinel Zeta']);
+    await walkNext('Sentinel Zeta', 'closing');
+    await expectCard('closing-checked', 'Quote the large centered headline of this card and one line from the receipt list below it.', ['Sentinel Zeta']);
   },
 
   D14_settings_rebuild_and_validation: async (ctx) => {
