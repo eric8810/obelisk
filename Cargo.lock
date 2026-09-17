@@ -1887,8 +1887,6 @@ dependencies = [
 [[package]]
 name = "fc-gpui-linux"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f21f91c70ff04378a41ba7e81dbb32f3867c24670e79671be7c4e2322340ae5c"
 dependencies = [
  "accesskit",
  "accesskit_unix",

@@ -786,9 +786,11 @@ impl ObeliskApp {
             .unwrap_or(2) as i32;
         let next = (current + direction).clamp(0, STEPS.len() as i32 - 1) as usize;
         self.text_scale = STEPS[next];
+        // The tuple is (text, until): the toast never rendered because the
+        // expiry was set to `Instant::now()` (already expired at birth).
         self.toast = Some((
             format!("Font size: {}%", (STEPS[next] * 100.0).round() as u32),
-            std::time::Instant::now(),
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
         ));
         cx.notify();
     }
@@ -1102,7 +1104,10 @@ impl gpui::Render for ObeliskApp {
             .on_action(
                 cx.listener(|this: &mut ObeliskApp, _: &TextScaleReset, _window, cx| {
                     this.text_scale = 1.0;
-                    this.toast = Some(("Font size: 100%".to_string(), std::time::Instant::now()));
+                    this.toast = Some((
+                        "Font size: 100%".to_string(),
+                        std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    ));
                     cx.notify();
                 }),
             )
@@ -1837,8 +1842,13 @@ fn main() {
             cx.bind_keys(vec![
                 // Global view shortcuts (Vue resolveGlobalShortcut,
                 // modifier = Cmd on macOS / Ctrl elsewhere).
-                // Font scale (parity #5): 6 steps.
+                // Font scale (parity #5): 6 steps. On X11 the '=' key's
+                // keystroke name is the xkb keysym name "equal" (see
+                // fc-gpui-linux x11/client.rs keysym_get_name), so "ctrl-="
+                // never matched there — bind both spellings. "ctrl-plus" is
+                // shift+'=' and matches by name already.
                 KeyBinding::new("ctrl-=", crate::TextScaleUp, None),
+                KeyBinding::new("ctrl-equal", crate::TextScaleUp, None),
                 KeyBinding::new("ctrl-plus", crate::TextScaleUp, None),
                 KeyBinding::new("ctrl--", crate::TextScaleDown, None),
                 KeyBinding::new("ctrl-minus", crate::TextScaleDown, None),

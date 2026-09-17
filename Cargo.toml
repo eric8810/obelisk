@@ -27,6 +27,15 @@ uuid = { version = "1", features = ["v4"] }
 # v0.4.1 macOS launch crash). Vendored with a char-boundary-safe fix until
 # an upstream release carries it.
 fc-ui = { path = "vendor/fc-ui" }
+# fc-gpui-linux 0.9.0's X11 backend skips wheel events flagged
+# POINTER_EMULATED on the assumption that a smooth valuator motion event
+# follows. XWayland (any Wayland compositor hosting X11 apps) delivers the
+# wheel ONLY as emulated button presses, so scrolling was completely dead
+# there — the single biggest reason the app felt unusable with a real mouse.
+# Vendored with a dispatch-dedupe fix (see the patch comments in
+# vendor/fc-gpui-linux/src/linux/x11/client.rs) until an upstream release
+# carries it.
+fc-gpui-linux = { path = "vendor/fc-gpui-linux" }
 
 [profile.release]
 lto = "thin"
