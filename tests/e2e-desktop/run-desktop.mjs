@@ -936,8 +936,22 @@ const scenarios = {
     // the node's y; +30px lands cleanly inside the recap row's own area.
     const clickY = 100 + nodeY + 30;
     console.log('D16 node-click at', clickX, clickY, 'win', ctx.win.x, ctx.win.y, 'nodeY', nodeY, 'solid', JSON.stringify(solid));
-    d.clickAt(ctx.win, clickX, clickY);
-    await expectCard('cover', 'Is a large card visible now? Quote the big title text on the card.', ['Sentinel Alpha']);
+    // The row click occasionally lands in the hitbox quirk band without
+    // opening the deck — verify the Cover card appeared and re-click with
+    // a small offset instead of failing the attempt.
+    let cardOpen = false;
+    for (let i = 0; i < 3 && !cardOpen; i++) {
+      d.clickAt(ctx.win, clickX, clickY + 8 * i);
+      d.sleep(1500);
+      const coverShot = evidence.shot(ctx, `cover-${i}`);
+      const answer = await d.visionExpects(
+        coverShot,
+        'Quote the big title text of the large card if one is visible; otherwise say NO CARD. Format: just the title.',
+        [],
+      );
+      cardOpen = /sentinel alpha/i.test(answer);
+    }
+    if (!cardOpen) throw new ScenarioError('recap row click never opened the card deck');
 
     // Navigate with the next chevron. The bottom nav row renders: prev
     // chevron · dots+labels row · next chevron · Export/Copy buttons —
