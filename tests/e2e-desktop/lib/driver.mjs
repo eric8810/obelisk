@@ -18,7 +18,7 @@
 // probe screenshot when the layout shifts.
 
 import { execFileSync, execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -165,6 +165,25 @@ export function quitApp(pid) {
   }
 }
 
+/** Kill every instance of the app binary (E2E safety net). A wedged
+ *  instance from a failed teardown keeps its X11 window open and steals
+ *  window discovery + injected clicks from the next scenario/attempt —
+ *  observed as D14 clicking a dead app whose corpus was already deleted
+ *  (it renders "No sessions found" and never reacts). The pattern is
+ *  anchored to the start of the command line so the runner (whose argv
+ *  merely CONTAINS the path) is never matched; a user's own installation
+ *  at a different path is never touched. */
+export function killAllApps(binaryPath) {
+  const pattern = `^${binaryPath}`;
+  shQuiet(`pkill -f ${JSON.stringify(pattern)}`);
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const res = shQuiet(`pgrep -f ${JSON.stringify(pattern)}`);
+    if (!res.ok || !res.stdout.trim()) break;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  }
+}
+
 export function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -224,6 +243,68 @@ export function locateInWindow(win, shotPath, what, fallback = null, crop = null
 
 let navCalibrated = false;
 
+/** Locate an accent-bordered button (e.g. Settings → "Rebuild index") by
+ *  pixel signature: its rounded-rect purple outline renders as two
+ *  horizontal purple runs (top + bottom border) ~24-44px apart with
+ *  matching x-extents. Vision locates of this button drifted repeatedly —
+ *  badly when the button sits near the viewport's bottom edge. Returns
+ *  every candidate as {x, y, w} in window coords (empty array = none). */
+export function locateBorderedButtons(win, shotPath, region = null) {
+  const reg = region || {
+    x: 0,
+    y: Math.round(win.height * 0.4),
+    w: win.width,
+    h: Math.round(win.height * 0.6),
+  };
+  const txt = `/tmp/obelisk-btn-${Date.now()}.txt`;
+  sh(`convert ${JSON.stringify(shotPath)} -crop ${reg.w}x${reg.h}+${reg.x}+${reg.y} +repage txt:- > ${txt}`);
+  const purpleByRow = new Map();
+  for (const line of readFileSync(txt, 'utf8').split('\n')) {
+    const m = line.match(/^(\d+),(\d+): \((\d+),(\d+),(\d+)\)/);
+    if (!m) continue;
+    const x = Number(m[1]);
+    const y = Number(m[2]);
+    const [r, g, b] = [Number(m[3]), Number(m[4]), Number(m[5])];
+    if (b > 190 && b - g > 50 && r > 90 && r < 220) {
+      if (!purpleByRow.has(y)) purpleByRow.set(y, []);
+      purpleByRow.get(y).push(x);
+    }
+  }
+  // Strong rows → x-runs (gaps > 6px split; runs must be >= 60px wide).
+  const runsOf = (xs) => {
+    const runs = [];
+    for (const x of xs.sort((a, b) => a - b)) {
+      const last = runs[runs.length - 1];
+      if (last && x - last.end <= 6) last.end = x;
+      else runs.push({ start: x, end: x });
+    }
+    return runs.filter((r) => r.end - r.start >= 60);
+  };
+  const strong = [...purpleByRow.entries()]
+    .filter(([, xs]) => xs.length >= 40)
+    .map(([y, xs]) => ({ y, runs: runsOf(xs) }))
+    .sort((a, b) => a.y - b.y);
+  const candidates = [];
+  for (let i = 0; i < strong.length; i++) {
+    for (let j = i + 1; j < strong.length; j++) {
+      const gap = strong[j].y - strong[i].y;
+      if (gap < 24 || gap > 44) continue;
+      for (const r1 of strong[i].runs) {
+        for (const r2 of strong[j].runs) {
+          if (Math.abs(r1.start - r2.start) <= 12 && Math.abs(r1.end - r2.end) <= 12) {
+            candidates.push({
+              x: reg.x + Math.round((r1.start + r1.end) / 2),
+              y: reg.y + Math.round((strong[i].y + strong[j].y) / 2),
+              w: r1.end - r1.start,
+            });
+          }
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
 /** Has calibrateNav already succeeded this run? */
 export function navReady() {
   return navCalibrated;
@@ -232,31 +313,103 @@ export function navReady() {
 /** Re-derive the sidebar nav rows and the list search box from a probe
  *  screenshot of the sessions view, once per run. Mutates the exported
  *  NAV/SEARCH_BOX objects in place so every scenario click follows the
- *  actual geometry. Rows the vision pass cannot parse keep their
- *  hardcoded default. */
+ *  actual geometry.
+ *
+ *  The rows are located by a DETERMINISTIC pixel scan of the sidebar
+ *  rail: vision percentage answers on tall images carry a systematic
+ *  vertical bias (measured ~4 percentage points ≈ 40px on a 980px-tall
+ *  window — more than a row height), so the vision grid was rejected in
+ *  favor of the sidebar's fixed structure:
+ *    brand, LIBRARY hdr, Sessions, Memory, Active, Archived,
+ *    STATS hdr, Activity, Recap, PROJECTS hdr, <project rows…>, Settings
+ *  i.e. rows 2..8 from the top are the nav rows and Settings is the last
+ *  band regardless of how many project rows exist. The search box keeps
+ *  its vision locate (a short crop, where the bias is small). */
 export function calibrateNav(win, probeShotPath) {
   if (navCalibrated) return;
-  const railW = Math.round(win.width * 0.25);
-  const answer = sh(
-    `dim image read ${JSON.stringify(probeShotPath)} --prompt 'This is an app window: a left sidebar rail and a main panel. Locate these SIDEBAR rows: Sessions, Memory, Active, Archived, Activity, Recap, Settings. Output one line per row, exactly: NAME X=NN% Y=NN% (percentages of THIS image). Format only.'`,
-    { timeout: 300_000 },
-  );
-  let found = 0;
-  for (const line of answer.split('\n')) {
-    const nm = line.match(/(sessions|memory|active|archived|activity|recap|settings)/i);
-    if (!nm) continue;
-    const xs = line.match(/x\s*[=:]\s*(\d+(?:\.\d+)?)\s*%/i);
-    const ys = line.match(/y\s*[=:]\s*(\d+(?:\.\d+)?)\s*%/i);
-    if (!xs || !ys) continue;
-    const name = nm[1][0].toUpperCase() + nm[1].slice(1).toLowerCase();
-    if (!NAV[name]) continue;
-    NAV[name] = {
-      x: Math.round((Number(xs[1]) / 100) * win.width),
-      y: Math.round((Number(ys[1]) / 100) * win.height),
-    };
-    found += 1;
+  const railW = Math.min(200, Math.max(120, Math.round(win.width * 0.2)));
+
+  // 1. Pixel-scan the left rail for text/icon bands.
+  const railTxt = `/tmp/obelisk-nav-rail-${Date.now()}.txt`;
+  sh(`convert ${JSON.stringify(probeShotPath)} -crop ${railW}x${win.height}+0+0 +repage txt:- > ${railTxt}`);
+  const rowCount = new Map(); // y -> bright pixel count
+  for (const line of readFileSync(railTxt, 'utf8').split('\n')) {
+    const m = line.match(/^(\d+),(\d+): \((\d+),(\d+),(\d+)\)/);
+    if (!m) continue;
+    const y = Number(m[2]);
+    if (Math.max(Number(m[3]), Number(m[4]), Number(m[5])) > 100) {
+      rowCount.set(y, (rowCount.get(y) || 0) + 1);
+    }
   }
-  // The search box lives in the main-panel header, right of the sidebar.
+  // Cluster rows with content into bands (allow tiny gaps).
+  const bands = [];
+  let cur = null;
+  for (const y of [...rowCount.keys()].sort((a, b) => a - b)) {
+    if (rowCount.get(y) < 3) continue;
+    if (cur && y - cur[1] <= 4) {
+      cur[1] = y;
+      cur[2] += rowCount.get(y);
+    } else {
+      if (cur && cur[2] >= 30) bands.push(cur);
+      cur = [y, y, rowCount.get(y)];
+    }
+  }
+  if (cur && cur[2] >= 30) bands.push(cur);
+
+  const center = (band) => Math.round((band[0] + band[1]) / 2);
+  const NAV_X = Math.min(100, Math.round(railW / 2));
+
+  // 2. Map the fixed sidebar structure onto the bands.
+  const ORDER = ['Sessions', 'Memory', 'Active', 'Archived', 'Activity', 'Recap', 'Settings'];
+  let found = 0;
+  if (bands.length >= 10) {
+    const byName = {
+      Sessions: bands[2],
+      Memory: bands[3],
+      Active: bands[4],
+      Archived: bands[5],
+      Activity: bands[7],
+      Recap: bands[8],
+      Settings: bands[bands.length - 1],
+    };
+    // Light structural sanity: nav rows ordered, Activity/Recap adjacent,
+    // Settings below Recap (project rows may sit between).
+    const ok =
+      byName.Sessions[0] < byName.Memory[0] &&
+      byName.Memory[0] < byName.Active[0] &&
+      byName.Active[0] < byName.Archived[0] &&
+      byName.Activity[0] < byName.Recap[0] &&
+      byName.Recap[1] < byName.Settings[0] &&
+      byName.Archived[1] < byName.Activity[0];
+    if (ok) {
+      for (const name of ORDER) {
+        NAV[name] = { x: NAV_X, y: center(byName[name]) };
+        found += 1;
+      }
+      // First project row: bands[10] when at least one exists (bands[9]
+      // is the PROJECTS header; the last band is Settings).
+      if (bands.length >= 11) {
+        NAV_PROJECT.x = NAV_X;
+        NAV_PROJECT.y = center(bands[10]);
+      }
+    } else {
+      console.log('nav band structure mismatch; falling back to the scaled default grid');
+    }
+  } else {
+    console.log(`nav scan found only ${bands.length} bands; falling back to the scaled default grid`);
+  }
+  if (found === 0) {
+    // The hardcoded grid is calibrated for a 1250x749 window; scale it
+    // proportionally so the fallback at least tracks the real geometry.
+    for (const name of ORDER) {
+      NAV[name] = {
+        x: Math.max(8, Math.round((NAV[name].x / 1250) * win.width)),
+        y: Math.max(8, Math.round((NAV[name].y / 749) * win.height)),
+      };
+    }
+  }
+
+  // 3. The search box lives in the main-panel header, right of the sidebar.
   const sb = locateInWindow(
     win,
     probeShotPath,
@@ -270,8 +423,15 @@ export function calibrateNav(win, probeShotPath) {
   }
   navCalibrated = true;
   console.log(
-    `nav calibrated: ${found}/7 rows vision-derived at ${win.width}x${win.height}` +
-      (sb ? ', search box too' : '; search box kept default'),
+    `nav calibrated: ${found}/7 rows pixel-scanned at ${win.width}x${win.height}` +
+      (sb ? ', search box vision-located' : '; search box kept default'),
+  );
+  console.log(
+    'nav grid:',
+    Object.entries(NAV)
+      .map(([k, v]) => `${k}(${v.x},${v.y})`)
+      .join(' '),
+    `search(${SEARCH_BOX.x},${SEARCH_BOX.y})`,
   );
 }
 

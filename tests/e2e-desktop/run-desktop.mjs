@@ -49,6 +49,9 @@ async function setup(scenario) {
   );
   d.sh(`${JSON.stringify(binary)} --build`, { env: { ...process.env, HOME: home } });
   const logPath = join(runDir, `${scenario}-app.log`);
+  // Safety net: a wedged instance from a previous run/attempt keeps its
+  // window open and poisons window discovery (see killAllApps).
+  d.killAllApps(appBinary);
   const { pid, win } = d.launchApp({ binary: appBinary, logPath, env: { HOME: home } });
   // Vision-calibrate the sidebar nav rows / search box once per run — the
   // hardcoded grid assumes the geometry the suite was first calibrated on.
@@ -79,6 +82,7 @@ function openFirstSession(ctx) {
 
 async function teardown(ctx) {
   d.quitApp(ctx.pid);
+  d.killAllApps(appBinary);
   rmSync(ctx.home, { recursive: true, force: true });
   rmSync(ctx.corpus, { recursive: true, force: true });
 }
@@ -1111,30 +1115,52 @@ const scenarios = {
       db,
       "SELECT mtime FROM index_state WHERE jsonl_path='__last_build__';",
     );
-    d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
-    d.sleep(1500);
+    // Enter Settings with verification: this click lands right after two
+    // daemon watcher rebuilds while the UI is still churning, and it can
+    // be swallowed by a re-render (observed: the view stayed on the
+    // sessions empty state and every downstream locate failed).
+    let settingsOpen = false;
+    for (let attempt = 0; attempt < 3 && !settingsOpen; attempt++) {
+      d.clickAt(ctx.win, d.NAV.Settings.x, d.NAV.Settings.y);
+      d.sleep(1500);
+      const s = evidence.shot(ctx, `settings-${attempt}`);
+      const answer = await d.visionExpects(
+        s,
+        'Does the main panel show the Settings page (with an "Editor scheme" section and a "Provider roots" section)? Answer yes or no, one line.',
+        [],
+      );
+      settingsOpen = /\byes\b/i.test(answer);
+    }
+    if (!settingsOpen) {
+      throw new ScenarioError('Settings view never opened after the root switches');
+    }
     for (let i = 0; i < 4; i++) {
       d.scrollAt(ctx.win, 800, 400, 5);
       d.sleep(300);
     }
     const shot = evidence.shot(ctx, 'about');
-    const answer = d.sh(
-      `dim image read ${JSON.stringify(shot)} --prompt 'Find the button labeled "Rebuild index". Give its center as X=NN% Y=NN% of the image (percentages). Format only.'`,
-      { timeout: 300_000 },
-    );
-    const m = answer.match(/X\s*=\s*(\d+(?:\.\d+)?)\s*%\s*Y\s*=\s*(\d+(?:\.\d+)?)\s*%/i);
-    if (!m) throw new ScenarioError(`rebuild button not located: ${answer.slice(0, 160)}`);
-    d.clickAt(
-      ctx.win,
-      Math.round((Number(m[1]) / 100) * ctx.win.width),
-      Math.round((Number(m[2]) / 100) * ctx.win.height),
-    );
+    // Click the Rebuild button by PIXEL signature (purple outline = two
+    // matching horizontal purple runs 24-44px apart): vision locates of
+    // this button drifted badly, especially when scrolling leaves it
+    // clipped at the viewport's bottom edge. Verify via the __last_build__
+    // marker and retry across candidates/offsets.
     let buildAfter = buildBefore;
-    const deadline2 = Date.now() + 40_000;
-    while (Date.now() < deadline2) {
-      buildAfter = d.sqlite(db, "SELECT mtime FROM index_state WHERE jsonl_path='__last_build__';");
-      if (buildAfter !== buildBefore) break;
-      d.sleep(800);
+    let clicks = 0;
+    outer:
+    for (const cand of d.locateBorderedButtons(ctx.win, shot)) {
+      for (const dy of [0, 10, -10]) {
+        d.clickAt(ctx.win, cand.x, cand.y + dy);
+        clicks += 1;
+        const attemptDeadline = Date.now() + 15_000;
+        while (Date.now() < attemptDeadline) {
+          buildAfter = d.sqlite(db, "SELECT mtime FROM index_state WHERE jsonl_path='__last_build__';");
+          if (buildAfter !== buildBefore) break outer;
+          d.sleep(800);
+        }
+      }
+    }
+    if (clicks === 0) {
+      throw new ScenarioError('Rebuild button not found by border scan');
     }
     if (buildAfter === buildBefore) {
       throw new ScenarioError('manual rebuild did not refresh __last_build__');
